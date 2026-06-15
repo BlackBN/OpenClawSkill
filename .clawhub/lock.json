@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "cursor-agent-openclaw": {
+      "version": "1.0.2",
+      "installedAt": 1781442482420,
+      "registry": "https://clawhub.ai"
+    }
+  }
+}
