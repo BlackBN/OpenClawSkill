@@ -1,0 +1,61 @@
+{
+  "skill_name": "stock-screener",
+  "evals": [
+    {
+      "id": 0,
+      "name": "sp500-tech-sector",
+      "prompt": "I want to find some US tech stocks that are not too expensive and have solid profitability. PE under 25, ROE at least 20%. What are the best picks right now?",
+      "expected_output": "Uses server-side screening via yf.screen(), applies Technology sector + PE/ROE filters with balanced style, returns ranked list with 5-factor scores and industry breakdown",
+      "files": [],
+      "assertions": [
+        {"name": "server_side_screening", "text": "Uses server-side API, not scanning 500+ tickers individually"},
+        {"name": "sector_filter_applied", "text": "Technology sector filter applied correctly"},
+        {"name": "multiple_results", "text": "Returns multiple stocks (not just 1-2)"},
+        {"name": "five_factor_scoring", "text": "Output shows 5-factor scoring with valuation, profitability, growth, momentum, safety"},
+        {"name": "score_differentiation", "text": "Clear score ranking with meaningful spread"}
+      ]
+    },
+    {
+      "id": 1,
+      "name": "hstech-quality",
+      "prompt": "Help me look at the Hang Seng Tech index — which stocks in it have good fundamentals? I care about profitability and valuation being reasonable.",
+      "expected_output": "Uses --index hstech with quality or balanced style, screens 27 HK tickers, returns quality-ranked list with .HK format",
+      "files": [],
+      "assertions": [
+        {"name": "hstech_index_used", "text": "Used --index hstech, loaded 27 tickers"},
+        {"name": "hk_tickers_present", "text": "All results use .HK ticker format"},
+        {"name": "style_appropriate", "text": "Uses quality or balanced style given user emphasis on profitability + valuation"},
+        {"name": "score_differentiation", "text": "Clear score ranking"},
+        {"name": "csv_output_exists", "text": "CSV output file produced"}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "custom-8stocks",
+      "prompt": "I'm watching these stocks: AAPL MSFT NVDA TSLA META AMZN GOOGL JPM. Which ones are actually good value right now? Filter out anything with PE over 40 or ROE below 10%.",
+      "expected_output": "Screens all 8 tickers with --pe 40 --roe 10 and value style (user says 'good value'), TSLA filtered out, remaining stocks ranked by 5-factor score",
+      "files": [],
+      "assertions": [
+        {"name": "all_tickers_screened", "text": "All 8 tickers were screened"},
+        {"name": "value_style_used", "text": "Uses value style preset since user explicitly asks about value"},
+        {"name": "tsla_filtered_out", "text": "TSLA excluded by filters"},
+        {"name": "five_factor_output", "text": "Output includes PE, EV/EBITDA, ROE, growth, momentum, D/E columns"},
+        {"name": "score_differentiation", "text": "Clear score ranking with meaningful spread"}
+      ]
+    },
+    {
+      "id": 3,
+      "name": "growth-screening",
+      "prompt": "Find me high-growth US tech stocks. I don't mind paying up for growth — PE up to 50 is fine, ROE at least 10%.",
+      "expected_output": "Uses --sector Technology --pe 50 --roe 10 --style growth, returns stocks ranked with growth-weighted scoring emphasizing revenue/earnings growth and momentum",
+      "files": [],
+      "assertions": [
+        {"name": "growth_style_used", "text": "Uses growth style preset for growth-focused request"},
+        {"name": "relaxed_pe_filter", "text": "PE threshold set to 50 as user specified"},
+        {"name": "growth_weighted_scoring", "text": "Scoring weights show Growth(40%) + Momentum(25%) emphasis"},
+        {"name": "multiple_results", "text": "Returns multiple stocks"},
+        {"name": "score_differentiation", "text": "Clear score ranking"}
+      ]
+    }
+  ]
+}
