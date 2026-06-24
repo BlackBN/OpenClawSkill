@@ -25,6 +25,13 @@ import argparse
 import time
 import math
 from collections import Counter
+from pathlib import Path
+
+_SHARED = Path(__file__).resolve().parents[2]
+if str(_SHARED) not in sys.path:
+    sys.path.insert(0, str(_SHARED))
+
+from _data.provider import enrich_screener_row, get_index_constituents, screen_market  # noqa: E402
 
 # Hang Seng Index — major constituents
 HSI_TICKERS = [
@@ -62,6 +69,9 @@ STYLE_PRESETS = {
     "value":    {"valuation": 40, "profitability": 20, "growth": 10, "momentum": 10, "safety": 20},
     "growth":   {"valuation": 10, "profitability": 15, "growth": 40, "momentum": 25, "safety": 10},
     "quality":  {"valuation": 15, "profitability": 35, "growth": 15, "momentum": 10, "safety": 25},
+    # A-share tuned (ref: QVS value / JoinQuant multi-factor)
+    "dividend": {"valuation": 35, "profitability": 30, "growth": 5, "momentum": 5, "safety": 25},
+    "momentum": {"valuation": 5, "profitability": 10, "growth": 15, "momentum": 55, "safety": 15},
 }
 
 
@@ -98,12 +108,15 @@ def _compute_valuation_scores(stocks_data, max_pe):
     # Collect valid PE and EV/EBITDA values
     pe_values = {}
     ev_values = {}
+    pb_values = {}
     for d in stocks_data:
         t = d["ticker"]
-        if d["pe"] and d["pe"] > 0:
+        if d.get("pe") and d["pe"] > 0:
             pe_values[t] = d["pe"]
-        if d["ev_ebitda"] and d["ev_ebitda"] > 0:
+        if d.get("ev_ebitda") and d["ev_ebitda"] > 0:
             ev_values[t] = d["ev_ebitda"]
+        if d.get("pb") and d["pb"] > 0:
+            pb_values[t] = d["pb"]
 
     def _rank_score(values_dict):
         """Convert values to 0-1 scores where lower value = higher score."""
@@ -124,8 +137,8 @@ def _compute_valuation_scores(stocks_data, max_pe):
 
     pe_scores = _rank_score(pe_values)
     ev_scores = _rank_score(ev_values)
+    pb_scores = _rank_score(pb_values)
 
-    # Combine: average of available scores
     result = {}
     all_tickers = set(d["ticker"] for d in stocks_data)
     for t in all_tickers:
@@ -134,6 +147,8 @@ def _compute_valuation_scores(stocks_data, max_pe):
             components.append(pe_scores[t])
         if t in ev_scores:
             components.append(ev_scores[t])
+        elif t in pb_scores:
+            components.append(pb_scores[t])  # A-share: PB 替代 EV/EBITDA
         if components:
             result[t] = sum(components) / len(components)
         else:
@@ -184,25 +199,29 @@ def compute_scores(stocks_data, max_pe, min_roe, style="balanced"):
             growth_ratio = max(0, min(1, avg_growth / 50))
             score += growth_ratio * weights["growth"]
 
-        # 4. Momentum: 52-week price change
+        # 4. Momentum: 52-week return (+ turnover boost for A-share momentum style)
         mom = d.get("momentum_52w") or 0
-        # -30% to +80% mapped to 0-1
         mom_ratio = max(0, min(1, (mom + 30) / 110))
+        if style == "momentum":
+            turnover = d.get("turnover_pct") or 0
+            if turnover > 0:
+                mom_ratio = min(1, mom_ratio * 0.7 + min(turnover / 15, 1) * 0.3)
         score += mom_ratio * weights["momentum"]
 
-        # 5. Safety: debt/equity (lower = safer) + cash flow quality (higher = safer)
+        # 5. Safety: leverage + cash flow quality
         safety_components = []
         de = d.get("debt_to_equity")
         if de is not None and de >= 0:
-            # D/E 0-200: lower is better
             de_score = max(0, min(1, 1 - de / 200))
             safety_components.append(de_score)
-        ocf = d.get("ocf") or 0
-        ni = d.get("net_income") or 0
-        if ni > 0 and ocf > 0:
-            # OCF/NI ratio: >1.0 = good cash quality
-            cf_quality = min(1, ocf / ni / 1.5)
-            safety_components.append(cf_quality)
+        cfq = d.get("cf_quality")
+        if cfq is not None and cfq > 0:
+            safety_components.append(min(1, cfq / 1.5))
+        else:
+            ocf = d.get("ocf") or 0
+            ni = d.get("net_income") or 0
+            if ni > 0 and ocf > 0:
+                safety_components.append(min(1, ocf / ni / 1.5))
         if safety_components:
             safety_score = sum(safety_components) / len(safety_components)
         else:
@@ -334,56 +353,34 @@ def _format_result(data, score):
         "momentum_52w_pct": round(data["momentum_52w"], 1),
         "debt_equity": round(data["debt_to_equity"], 1) if data["debt_to_equity"] is not None else "",
         "score": score,
+        "price_date": data.get("price_date"),
     }
 
 
 def screen_server_side(region="us", sector=None, max_pe=20, min_roe=15,
                        min_market_cap=1e9, top=25):
-    """Phase 1: Server-side screening via Yahoo Finance EquityQuery."""
-    import yfinance as yf
+    """Phase 1: market scan — CN/HK via akshare, US via yfinance."""
+    region_l = region.lower()
+    if region_l in ("cn", "a", "a-share", "ashare", "hk"):
+        rows, total = screen_market(
+            region=region_l,
+            max_pe=max_pe,
+            min_roe=min_roe,
+            min_mcap=min_market_cap,
+            sector_keyword=sector,
+            top=top,
+        )
+        quotes = [{"symbol": r["symbol"], "shortName": r.get("shortName", "")} for r in rows]
+        print(f"[screener] {region_l.upper()} market scan returned {len(quotes)} stocks", file=sys.stderr)
+        return quotes, total
 
-    conditions = []
-    conditions.append(yf.EquityQuery('eq', ['region', region]))
-
-    if sector:
-        resolved = resolve_sector(sector)
-        if resolved:
-            conditions.append(yf.EquityQuery('eq', ['sector', resolved]))
-            print(f"[screener] Server-side filter: sector={resolved}", file=sys.stderr)
-        else:
-            print(f"[screener] Skipping sector filter (unresolved)", file=sys.stderr)
-
-    if max_pe > 0:
-        conditions.append(yf.EquityQuery('btwn', ['peratio.lasttwelvemonths', 0, max_pe]))
-
-    if min_roe > 0:
-        conditions.append(yf.EquityQuery('gt', ['returnonequity.lasttwelvemonths', min_roe / 100]))
-
-    if min_market_cap > 0:
-        conditions.append(yf.EquityQuery('gt', ['intradaymarketcap', min_market_cap]))
-
-    query = yf.EquityQuery('and', conditions)
-    print(f"[screener] Running server-side screen (region={region})...", file=sys.stderr)
-
-    try:
-        result = yf.screen(query, sortField='intradaymarketcap', sortAsc=False,
-                           size=min(top, 250))
-    except Exception as e:
-        print(f"[screener] Server-side screen failed: {e}", file=sys.stderr)
-        return [], 0
-
-    total = result.get('total', 0)
-    quotes = result.get('quotes', [])
-    print(f"[screener] Server returned {len(quotes)} stocks (total matching: {total})", file=sys.stderr)
-
-    return quotes, total
+    from _data import us as us_provider
+    return us_provider.screen_server_side(region, sector, max_pe, min_roe, min_market_cap, top)
 
 
 def enrich_with_details(quotes, max_pe, min_roe, min_market_cap=0,
                         industry_filter=None, style="balanced"):
     """Phase 2: Fetch detailed data and score candidates."""
-    import yfinance as yf
-
     all_data = []
     skipped_industry = 0
     skipped_revalidation = 0
@@ -396,15 +393,15 @@ def enrich_with_details(quotes, max_pe, min_roe, min_market_cap=0,
             continue
 
         try:
-            info = yf.Ticker(ticker).info
-            data = _extract_stock_data(info, quote=q)
+            data = enrich_screener_row(ticker)
+            if data.get("is_st"):
+                continue
 
             if industry_filter:
                 if industry_filter.lower() not in data["industry"].lower():
                     skipped_industry += 1
                     continue
 
-            # Re-validate filters
             if max_pe > 0 and data["pe"] is not None and data["pe"] >= max_pe:
                 skipped_revalidation += 1
                 continue
@@ -445,8 +442,6 @@ def enrich_with_details(quotes, max_pe, min_roe, min_market_cap=0,
 def screen_custom_tickers(tickers, max_pe=20, min_roe=15, min_market_cap=1e9,
                           sector_filter=None, industry_filter=None, style="balanced"):
     """Screen a custom list of tickers."""
-    import yfinance as yf
-
     all_data = []
     total = len(tickers)
     print(f"[screener] Screening {total} custom tickers...", file=sys.stderr)
@@ -455,11 +450,9 @@ def screen_custom_tickers(tickers, max_pe=20, min_roe=15, min_market_cap=1e9,
         if i % 20 == 0 and i > 0:
             print(f"[screener] Progress: {i}/{total}", file=sys.stderr)
         try:
-            info = yf.Ticker(ticker).info
-            if not info:
+            data = enrich_screener_row(ticker)
+            if data.get("is_st"):
                 continue
-
-            data = _extract_stock_data(info)
 
             if sector_filter:
                 resolved = resolve_sector(sector_filter) or sector_filter
@@ -504,8 +497,8 @@ def screen_custom_tickers(tickers, max_pe=20, min_roe=15, min_market_cap=1e9,
 
 def main():
     parser = argparse.ArgumentParser(description="Multi-factor stock screener v2")
-    parser.add_argument("--region", default="us",
-                        help="Market region: us, hk, gb, jp, etc. (default: us)")
+    parser.add_argument("--region", default="cn",
+                        help="Market region: cn (A-share), hk, us (default: cn)")
     parser.add_argument("--index",
                         help="Predefined index universe (e.g., hsi, hstech)")
     parser.add_argument("--tickers", nargs="+",
@@ -536,8 +529,11 @@ def main():
             label = f"custom ({len(tickers)} tickers)"
         elif args.index:
             index_map = {
-                "hsi": (HSI_TICKERS, "Hang Seng Index"),
-                "hstech": (HSTECH_TICKERS, "Hang Seng Tech"),
+                "hsi": (HSI_TICKERS, "恒生指数"),
+                "hstech": (HSTECH_TICKERS, "恒生科技"),
+                "csi300": (get_index_constituents("csi300"), "沪深300"),
+                "hs300": (get_index_constituents("hs300"), "沪深300"),
+                "zz500": (get_index_constituents("zz500"), "中证500"),
             }
             if args.index.lower() in index_map:
                 tickers, idx_name = index_map[args.index.lower()]
@@ -631,6 +627,12 @@ def main():
     print(f"  Growth:        Revenue + earnings growth blend")
     print(f"  Momentum:      52-week price change")
     print(f"  Safety:        Low debt/equity + strong cash flow quality")
+    print(f"  Data:          A-share/HK → akshare/东财 · US → yfinance")
+    print(f"  Growth:        优先 TTM YoY，否则最近年报 YoY（非多年 CAGR）")
+
+    sample = results[0] if results else {}
+    if sample.get("price_date"):
+        print(f"\n📅 数据时效: 股价/K线截至 {sample['price_date']}（各股以 enrich 时为准）")
 
     # Formatted table
     print(f"\n{'Rank':<5} {'Ticker':<8} {'Company':<28} {'Industry':<20} "

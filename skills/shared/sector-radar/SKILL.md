@@ -1,119 +1,103 @@
 ---
 name: sector-radar
-description: Sector/ETF/fund momentum scanner for industry allocation and fund configuration. Compares any set of sector ETFs, thematic ETFs, country ETFs, or income ETFs by momentum, trend acceleration, relative valuation, and volume trend. Use this (NOT stock-screener) when the user wants to compare sectors or industries, select ETFs or funds, make sector allocation decisions, do portfolio rebalancing across sectors, compare thematic/geographic/income fund options, or identify sector rotation opportunities. Triggers for "which sector", "sector rotation", "ETF comparison", "fund allocation", "which industries are hot", "sector rebalance", "defensive vs cyclical", "overweight/underweight sectors". Do NOT use for screening individual stocks — that is stock-screener's job.
+description: "A股/港股/美股行业与ETF动量扫描，用于板块轮动、ETF配置、行业超配低配决策。用户问哪个板块强、行业轮动、ETF对比、基金配置、防御vs周期时使用。勿用于个股筛选(用stock-screener)。"
 ---
 
-# sector-radar
+# 行业雷达（sector-radar）
 
-**What it does:** Scans and ranks sector ETFs, thematic ETFs, country ETFs, or any ETF set by momentum and trend quality. Answers "which sectors/funds should I overweight?" — the step before stock-screener's "which stocks within that sector?"
+**做什么：** 对一组行业 ETF（或板块代理）按动量、趋势加速、相对估值、量能趋势打分排序。回答「现在该超配哪个板块？」—— 在 `stock-screener` 选个股之前的自上而下步骤。
 
-**Who it's for:** Fund managers doing sector rebalancing, investors choosing between thematic ETFs, anyone making top-down industry or geographic allocation decisions.
+**适合谁：** 做板块轮动、ETF 配置、波段切换赛道的投资者；A 股可用行业 ETF 代替纯概念板块指数。
 
-## Scoring Model (0-100)
+**设计参考：** 经典行业动量（Jegadeesh & Titman、Moskowitz & Grinblatt 行业动量）；A 股实践上常用行业 ETF（512xxx/515xxx）跟踪申万/主题板块。
 
-Four quantitative dimensions, all computed from ETF price/volume data:
+## 数据来源
 
-| Dimension | Weight | Method | Why it matters |
-|-----------|--------|--------|----------------|
-| Momentum | 50% | Weighted returns: 3M 35% + 6M 35% + 12M 30% | Core rotation signal — Jegadeesh & Titman (1993), Moskowitz & Grinblatt (1999) sector momentum |
-| Acceleration | 15% | 3M annualized vs 6M annualized return gap | Distinguishes accelerating trends from decelerating ones — positive = gaining strength |
-| Relative Valuation | 20% | PE rank within result set (lower PE = higher score) | Cross-sector valuation comparison without absolute thresholds — Fama & French (1992) |
-| Volume Trend | 15% | 20-day vs 60-day avg volume ratio | Confirms institutional conviction behind price moves |
+| 市场 | 数据源 | 基准示例 |
+|------|--------|----------|
+| **A 股 ETF** | akshare / 东财 | `510300`（沪深300） |
+| **港股 ETF** | akshare | `2800.HK`（盈富） |
+| **美股 ETF** | yfinance | `SPY` |
 
-**Design choices:**
-- **Skip 1-month momentum**: Jegadeesh (1990) showed 1-month returns exhibit short-term reversal, not continuation.
-- **Acceleration over earnings revision**: ETFs don't expose forward PE from free data sources. Momentum acceleration (3M vs 6M trend) is a pure price signal that separates strengthening from fading trends. For earnings revision context, use your own knowledge of sector earnings trends — see "After Running the Script" below.
-- **Relative valuation**: PE 25 is cheap for tech but expensive for utilities. Ranking within the scanned set avoids sector-specific thresholds.
+## 四维评分（0–100）
 
-## Script Usage
+| 维度 | 权重 | 方法 | 含义 |
+|------|------|------|------|
+| 动量 | 50% | 3M×35% + 6M×35% + 12M×30% | 板块趋势强弱 |
+| 加速 | 15% | 3M 年化 vs 6M 年化差 | 趋势在加强还是见顶 |
+| 相对估值 | 20% | 池内 PE 排名（低 PE 得分高） | 跨板块比价 |
+| 量能 | 15% | 20 日均量 / 60 日均量 | 资金是否跟进 |
+
+**设计要点：**
+
+- 不用 1 个月动量（短端反转效应）
+- ETF 无一致 forward PE，用 **动量加速** 代替盈利修正
+- 估值在 **本次扫描集合内** 相对排名，避免「科技 PE 25 算贵还是便宜」的绝对争论
+
+## 脚本用法
 
 ```bash
-# US SPDR sector ETFs vs S&P 500
-python3 scripts/fetch_data.py XLK XLF XLE XLV XLI XLY XLP XLB XLRE XLU XLC --benchmark SPY
+# A 股：半导体、有色、消费、新能源、酒 vs 沪深300
+python3 scripts/fetch_data.py 512480 512400 159928 515030 512690 --benchmark 510300
 
-# With custom sector labels
-python3 scripts/fetch_data.py XLK XLF XLE --labels Technology Financials Energy --benchmark SPY
+# A 股常见行业 ETF 参考
+# 512480 半导体 | 512400 有色 | 159928 消费 | 515030 新能源 | 515000 军工
+# 512690 酒     | 512880 证券 | 512010 医药 | 512170 医疗
 
-# HK market sectors vs Tracker Fund
-python3 scripts/fetch_data.py 3067.HK 3033.HK 3012.HK 2800.HK 2828.HK 3040.HK --benchmark 2800.HK
+# 港股板块 vs 盈富
+python3 scripts/fetch_data.py 3067.HK 3033.HK 3012.HK --benchmark 2800.HK
 
-# Thematic ETFs
-python3 scripts/fetch_data.py BOTZ ICLN HACK ARKK --benchmark QQQ
-
-# Global market comparison
-python3 scripts/fetch_data.py EWJ EWG EWU EWA FXI --benchmark SPY --labels Japan Germany UK Australia China
+# 美股 SPDR 十一行业 vs SPY
+python3 scripts/fetch_data.py XLK XLF XLE XLV XLI --benchmark SPY
 ```
 
-### Parameters
+### 参数
 
-| Param | Required | Description |
-|-------|----------|-------------|
-| `etfs` | Yes | ETF tickers to scan (positional, space-separated) |
-| `--benchmark` | No | Benchmark ticker for relative strength (e.g., SPY, QQQ, 2800.HK) |
-| `--labels` | No | Sector labels matching ETFs order; defaults to ETF short name from Yahoo |
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `etfs` | 是 | ETF 代码，空格分隔 |
+| `--benchmark` | 否 | 相对强弱基准 |
+| `--labels` | 否 | 自定义板块名称，顺序与 etfs 一致 |
 
-### Output
+### 输出
 
-Markdown report with:
-- **Sector Rankings** — sorted by composite score with returns, acceleration, PE, relative strength, volume trend
-- **Momentum Leaders / Laggards** — with acceleration annotation
-- **Momentum × Trend Quality Quadrant** — four-quadrant classification for allocation decisions
-- CSV data on stderr for programmatic use
+Markdown 报告：板块排名、动量领先/落后、**动量×趋势质量四象限**；stderr 输出 CSV 供程序读取。
 
-## Choosing ETFs for the User
+## 如何帮用户选 ETF 列表
 
-**Principle**: Use broad sector ETFs for general rotation scans, thematic ETFs for specific themes, and country ETFs for geographic comparison. Always include a benchmark for relative strength context.
+- **A 股板块轮动**：选 5–11 只覆盖主要行业的 ETF + `510300` 基准
+- **港股**：3067（新经济）、3033（恒生科技）、3012（医药）等 + `2800.HK`
+- **细分主题**：在宽基 ETF 基础上加主题 ETF（如 SMH、BOTZ 对应美股）
+- **全球对比**：国家/地区 ETF + `SPY` 基准
 
-**Patterns**:
-- **"US sector rotation"** → 11 SPDR sector ETFs (XLK XLF XLE XLV XLI XLY XLP XLB XLRE XLU XLC) + `--benchmark SPY`
-- **"HK sector scan"** → HK sector ETFs (3067.HK, 3033.HK, 3012.HK, 2828.HK, 3040.HK) + `--benchmark 2800.HK`
-- **"which tech sub-industries"** → Sub-sector ETFs like SMH, IGV, HACK, SKYY, BOTZ + `--benchmark XLK`
-- **"global markets comparison"** → Country ETFs like EWJ, FXI, EWG, EWU, EWZ + `--benchmark SPY`
+## 跑完脚本后你要做什么
 
-Use your knowledge of available ETFs — don't limit yourself to these examples.
+### 1. 四象限（优先讲）
 
-## After Running the Script
+| 象限 | 动量 | 加速 | 信号 | 建议 |
+|------|------|------|------|------|
+| 强 + 加速 | 高 | 正 | 趋势加强 | 可超配 |
+| 强 + 减速 | 高 | 负 | 可能见顶 | 减仓或收紧止损 |
+| 弱 + 加速 | 低 | 正 | 早期反转 | 观察确认 |
+| 弱 + 减速 | 低 | 负 | 趋势恶化 | 低配或回避 |
 
-The script outputs quantitative price/volume data. Your job is to layer on the qualitative analysis that makes it actionable for allocation decisions. Follow this framework:
+### 2. 宏观与催化剂
 
-### 1. Trend Quality Quadrant (lead with this)
+解释数字背后的原因：利率、政策、业绩周期、地缘等。A 股注意政策导向（新能源、半导体自主、消费刺激等）。
 
-The script outputs a four-quadrant classification. This is the core decision framework:
+### 3. 相对强弱与量能
 
-| Quadrant | Momentum | Acceleration | Signal | Action |
-|----------|----------|-------------|--------|--------|
-| **Strong + accelerating** | High | Positive | Trend gaining strength | Overweight — highest conviction rotation target |
-| **Strong + decelerating** | High | Negative | Trend may be peaking | Take partial profits or tighten stops |
-| **Weak + accelerating** | Low | Positive | Early signs of reversal | Potential contrarian entry — watch for confirmation |
-| **Weak + decelerating** | Low | Negative | Deteriorating across timeframes | Underweight or avoid |
+- 板块涨 5% 但基准涨 8% → 实际偏弱，看 RS 列
+- 价涨量增：资金确认；价涨量缩：警惕 exhaustion
 
-### 2. Macro & Catalyst Context (the "why" behind the numbers)
+### 4. 配置建议
 
-The script tells you what's happening (which sectors are strong/weak). Your job is to explain why — this is where buy-side analysts add the most value. Use your own knowledge first; only search the web if you genuinely lack context on a specific event or sector (e.g., an unfamiliar regional market). For mainstream US/HK/global sectors, your training data already covers the macro backdrop, sector catalysts, and competitive dynamics well enough. Avoiding unnecessary web searches keeps response time under 2 minutes.
+- **战术（3–6 月）**：按象限 + 催化剂给超配/低配
+- **战略（12 月+）**：低动量 + 低估值 + 盈利改善 → 潜在左侧
+- **风险**：单一行业集中、动量与量能背离
 
-- **Macro drivers**: What's currently driving sector rotation? Interest rate cycle, geopolitical events, fiscal policy, earnings cycle stage. Be specific — "Fed held at 3.5-3.75% with hawkish dot plot" is useful, "rates are high" is not.
-- **Sector catalysts**: For each top/bottom-ranked sector, identify the specific catalyst or headwind explaining the signal. E.g., Energy momentum from Middle East supply disruption, Tech weakness from AI capex ROI skepticism.
-- **Signal vs narrative alignment**: Where the quantitative signal confirms the consensus narrative, conviction is higher. Where they diverge (e.g., strong momentum in a sector everyone is bearish on), flag it — that's either a contrarian opportunity or a trap.
+### 5. 衔接下一步
 
-This context transforms raw momentum data into an investment thesis. Without it, the analysis is just a sorted table.
-
-### 3. Relative Strength & Volume Confirmation
-
-- Frame returns relative to benchmark when provided. A sector returning +5% while the benchmark returned +8% is underperforming — the RS 6M column shows this directly.
-- Volume confirms or contradicts price signals:
-  - Strong momentum + rising volume (>1.1) = **confirmed institutional buying**
-  - Strong momentum + fading volume (<0.9) = **trend exhaustion — be cautious**
-  - Weak momentum + rising volume = **distribution — institutional selling**
-
-### 4. Allocation Recommendations
-
-Be specific and layered:
-- **Tactical (3-6 months)**: Based on momentum quadrant + macro catalysts. "Overweight Energy, underweight Tech" with the specific catalyst driving each call.
-- **Structural (12+ months)**: Based on valuation rank + macro backdrop. Low-momentum sectors with cheap valuations and positive earnings revision are the strongest structural candidates.
-- **Risk flags**: Note sector concentration, valuation extremes, momentum-volume divergences, or macro scenarios that would invalidate the thesis.
-
-### 5. Connect to Next Steps
-
-- Suggest `stock-screener` to find specific stocks within top-ranked sectors
-- Suggest `business-quality` for moat analysis on sector leaders
-- For geographic comparisons, note currency, macro, and policy risk factors
+- 强势板块内用 `stock-screener` 选股
+- 板块龙头用 `business-quality` 看护城河
+- 跨市场配置注意汇率与政策风险

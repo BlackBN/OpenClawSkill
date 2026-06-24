@@ -17,38 +17,27 @@ Usage:
 
 import sys, json
 from datetime import datetime
+from pathlib import Path
 
+_SHARED = Path(__file__).resolve().parents[2]
+if str(_SHARED) not in sys.path:
+    sys.path.insert(0, str(_SHARED))
 
-# ── Market configuration ────────────────────────────────────────────────────
+from _data.provider import (  # noqa: E402
+    detect_market,
+    get_annual_financials,
+    get_info,
+    get_market_config,
+    get_tax_rate,
+)
+from _data.freshness import format_freshness_md  # noqa: E402
 
-def detect_market(ticker: str) -> str:
-    """Detect market from ticker suffix."""
-    t = ticker.upper().strip()
-    if t.endswith(".HK"): return "HK"
-    if t.endswith(".SS") or t.endswith(".SZ"): return "CN"
-    if t.endswith(".T"): return "JP"
-    if t.endswith(".L"): return "UK"
-    if t.endswith(".DE"): return "DE"
-    if t.endswith(".PA"): return "FR"
-    if t.endswith(".AS"): return "NL"
-    return "US"
-
-
-MARKET_CONFIGS = {
-    "US": {"tax_rate": 0.21, "risk_free_rate": 0.045, "currency": "USD", "label": "United States"},
-    "HK": {"tax_rate": 0.165, "risk_free_rate": 0.04, "currency": "HKD", "label": "Hong Kong"},
-    "CN": {"tax_rate": 0.25, "risk_free_rate": 0.02, "currency": "CNY", "label": "China A-share"},
-    "JP": {"tax_rate": 0.30, "risk_free_rate": 0.01, "currency": "JPY", "label": "Japan"},
-    "UK": {"tax_rate": 0.25, "risk_free_rate": 0.04, "currency": "GBP", "label": "United Kingdom"},
-    "DE": {"tax_rate": 0.30, "risk_free_rate": 0.03, "currency": "EUR", "label": "Germany"},
-    "FR": {"tax_rate": 0.25, "risk_free_rate": 0.03, "currency": "EUR", "label": "France"},
-    "NL": {"tax_rate": 0.26, "risk_free_rate": 0.03, "currency": "EUR", "label": "Netherlands"},
-}
-_DEFAULT_CONFIG = {"tax_rate": 0.21, "risk_free_rate": 0.04, "currency": "USD", "label": "Unknown"}
-
-
-def get_market_config(market: str) -> dict:
-    return MARKET_CONFIGS.get(market, _DEFAULT_CONFIG)
+try:
+    import pandas as pd
+    import numpy as np
+except ImportError as e:
+    print(f"ERROR: Missing dependency — {e}. Run: pip install akshare pandas numpy", file=sys.stderr)
+    sys.exit(1)
 
 
 # ── Sector-aware valuation multiples ────────────────────────────────────────
@@ -114,11 +103,10 @@ def get_sector_multiples(market: str, sector: str | None) -> dict:
     return market_map.get("_DEFAULT", _US_MULTIPLES["_DEFAULT"])
 
 try:
-    import yfinance as yf
     import pandas as pd
     import numpy as np
 except ImportError as e:
-    print(f"ERROR: Missing dependency — {e}. Run: pip install yfinance pandas numpy", file=sys.stderr)
+    print(f"ERROR: Missing dependency — {e}. Run: pip install akshare pandas numpy", file=sys.stderr)
     sys.exit(1)
 
 
@@ -204,8 +192,8 @@ def compute_wacc(beta, risk_free, debt_ratio, tax_rate):
 # ── Data Fetching ──────────────────────────────────────────────────────────
 
 def fetch_valuation_data(ticker_sym):
-    t = yf.Ticker(ticker_sym)
-    info = t.info
+    info = get_info(ticker_sym)
+    fin = get_annual_financials(ticker_sym, years=5)
 
     name = info.get("longName") or info.get("shortName", ticker_sym)
     sector = info.get("sector")
@@ -241,96 +229,72 @@ def fetch_valuation_data(ticker_sym):
     rev_growth_trailing = safe_float(info.get("revenueGrowth"))  # trailing quarter YoY
     earn_growth_trailing = safe_float(info.get("earningsGrowth"))  # trailing quarter YoY
 
-    # ── Forward growth estimates (preferred for DCF) ──────────────────
-    # Priority: revenue_estimate next-year growth > EPS implied growth > trailing
+    # ── Forward growth estimates ──────────────────────────────────────────
     rev_growth_forward = None
     rev_growth_source = None
 
-    # 1. Try analyst revenue estimate (prefer next year, then current year)
-    try:
-        rev_est = t.revenue_estimate
-        if rev_est is not None and not rev_est.empty and "growth" in rev_est.columns:
-            # Prefer annual periods: +1y (next year) > 0y (current year)
-            for period in ["+1y", "0y"]:
-                if period in rev_est.index:
-                    val = safe_float(rev_est.loc[period, "growth"])
-                    if val is not None and abs(val) < 5:  # sanity: <500%
-                        rev_growth_forward = val
-                        rev_growth_source = "analyst_revenue_estimate"
-                        break
-    except Exception:
-        pass
+    # 1. Historical revenue CAGR from annual financials
+    revenue = fin.get("revenue", {})
+    rev_years = sorted(revenue.keys())
+    historical_cagr = None
+    if len(rev_years) >= 2 and revenue.get(rev_years[0]):
+        try:
+            n = len(rev_years) - 1
+            historical_cagr = round(
+                ((revenue[rev_years[-1]] / revenue[rev_years[0]]) ** (1 / n) - 1) * 100, 1
+            )
+        except Exception:
+            pass
 
-    # 2. Fallback: implied growth from forward vs trailing EPS
+    ttm = fin.get("ttm") or {}
+    freshness = fin.get("freshness") or {}
+
+    # 1b. TTM YoY (A-share quarterly) — preferred forward growth proxy
+    if ttm.get("revenue_yoy_pct") is not None:
+        rev_growth_forward = ttm["revenue_yoy_pct"] / 100
+        rev_growth_source = "ttm_revenue_yoy"
+
+    # 2. Fallback: implied growth from forward vs trailing EPS (US only)
     if rev_growth_forward is None and eps_fwd and eps_ttm and eps_ttm > 0:
         implied = (eps_fwd / eps_ttm) - 1
-        if abs(implied) < 5:  # sanity check
+        if abs(implied) < 5:
             rev_growth_forward = implied
             rev_growth_source = "implied_eps_growth"
 
-    # 3. Fallback: trailing quarterly revenue growth (what revenueGrowth actually is)
+    # 3. Fallback: trailing quarterly revenue growth
     if rev_growth_forward is None and rev_growth_trailing is not None:
         rev_growth_forward = rev_growth_trailing
         rev_growth_source = "trailing_quarterly"
 
-    # ── FCF from cash flow statement (multi-year average to smooth WC swings) ─
+    # 4. Fallback: historical CAGR
+    if rev_growth_forward is None and historical_cagr is not None:
+        rev_growth_forward = historical_cagr / 100
+        rev_growth_source = "historical_cagr"
+
+    # ── FCF from cash flow (prefer latest year; fallback multi-year avg) ───
     fcf = None
     is_financial = sector and sector in ("Financial Services", "Financial")
-    try:
-        cf = t.cashflow
-        if cf is not None and not cf.empty:
-            fcf_values = []
-            for col in cf.columns:
-                ocf, capex = None, None
-                for key in ["Operating Cash Flow", "Total Cash From Operating Activities"]:
-                    if key in cf.index:
-                        ocf = safe_float(cf.loc[key, col]); break
-                for key in ["Capital Expenditure", "Capital Expenditures"]:
-                    if key in cf.index:
-                        capex = safe_float(cf.loc[key, col]); break
-                if ocf is not None and capex is not None:
-                    fcf_values.append(ocf + capex)  # capex is negative
-            if fcf_values:
-                # Use average of available years (typically 4) to smooth volatility
-                fcf = sum(fcf_values) / len(fcf_values)
-            # For financials, OCF - CapEx is meaningless (dominated by loan/deposit flows)
-            if is_financial:
-                fcf = None
-    except Exception:
-        pass
+    fcf_by_year = fin.get("fcf", {})
+    fcf_values = list(fcf_by_year.values())
+    if not fcf_values and fin.get("ocf") and fin.get("capex"):
+        for yr in sorted(set(fin["ocf"]) | set(fin["capex"])):
+            o, c = fin["ocf"].get(yr), fin["capex"].get(yr)
+            if o is not None and c is not None:
+                fcf_values.append(o - abs(c))
+    if fcf_by_year:
+        latest_yr = sorted(fcf_by_year.keys())[-1]
+        fcf = fcf_by_year[latest_yr]
+    elif fcf_values:
+        fcf = sum(fcf_values[-3:]) / min(len(fcf_values), 3)
+    if is_financial:
+        fcf = None
 
-    # ── Fallback EBITDA from financials ──────────────────────────────────
+    # ── Fallback EBITDA from financials (latest year, not max) ───────────
     if ebitda is None:
-        try:
-            fin = t.financials
-            if fin is not None and not fin.empty:
-                col = fin.columns[0]
-                ebit, da = None, None
-                for key in ["EBIT", "Operating Income"]:
-                    if key in fin.index:
-                        ebit = safe_float(fin.loc[key, col]); break
-                for key in ["Reconciled Depreciation", "Depreciation And Amortization"]:
-                    if key in fin.index:
-                        da = safe_float(fin.loc[key, col]); break
-                if ebit and da:
-                    ebitda = round(ebit + abs(da), 0)
-        except Exception:
-            pass
-
-    # ── Historical revenue CAGR ──────────────────────────────────────────
-    historical_cagr = None
-    try:
-        fin = t.financials
-        if fin is not None and not fin.empty and "Total Revenue" in fin.index:
-            rev_row = fin.loc["Total Revenue"]
-            vals = [(c, safe_float(rev_row[c])) for c in fin.columns
-                    if safe_float(rev_row[c]) and safe_float(rev_row[c]) > 0]
-            if len(vals) >= 2:
-                vals.sort(key=lambda x: x[0])
-                n = len(vals) - 1
-                historical_cagr = round(((vals[-1][1] / vals[0][1]) ** (1 / n) - 1) * 100, 1)
-    except Exception:
-        pass
+        ebit_map = fin.get("ebit", {})
+        if ebit_map:
+            latest_yr = sorted(ebit_map.keys())[-1]
+            ebitda = ebit_map[latest_yr]
 
     # ── Growth rate for DCF ──────────────────────────────────────────────
     hist_growth = historical_cagr / 100 if historical_cagr is not None else None
@@ -530,6 +494,8 @@ def fetch_valuation_data(ticker_sym):
         "upside_pct": upside,
         "verdict": verdict,
         "reverse_dcf": reverse_dcf,
+        "freshness": freshness,
+        "ttm": ttm,
     }
 
 
@@ -545,6 +511,7 @@ def format_report(results):
         tk = r["ticker"]
         lines.append(f"# Valuation Analysis — {tk}")
         lines.append(f"\n_{r['date']} | {r['name']} | {r.get('sector') or 'N/A'} | {r['market']} Market_\n")
+        lines.append(format_freshness_md(None, r))
 
         # ── Fair Value Summary ───────────────────────────────────────────
         fv = r["fair_value"]

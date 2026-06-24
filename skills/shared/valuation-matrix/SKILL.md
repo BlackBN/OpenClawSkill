@@ -1,140 +1,102 @@
 ---
 name: valuation-matrix
-description: "Multi-method valuation framework — triangulates intrinsic value using DCF, reverse DCF, P/E, EV/EBITDA, FCF yield, and analyst consensus with sector-aware multiples. Use this skill whenever the user asks about fair value, intrinsic value, whether a stock is overvalued or undervalued, wants bear/base/bull price targets, wants to know what growth the market is pricing in, or needs a valuation opinion before buying or selling. Do NOT use for screening multiple stocks (stock-screener), business quality assessment (business-quality), or competitive comparison (competitor-analysis)."
+description: "多方法估值：DCF、反向DCF、PE/PB、EV/EBITDA、FCF收益率、分析师共识(A股常缺失)。用户问合理价、贵不贵、目标价区间、市场在定价多少成长时使用。勿用于批量选股或竞争对比。"
 ---
 
-# valuation-matrix
+# 估值矩阵（valuation-matrix）
 
-**What it does:** Triangulates a stock's fair value using 5 independent methods plus a reverse DCF insight. Answers: "What is this stock worth, and what does the market price imply?"
+**做什么：** 用 5 种独立方法 + 反向 DCF **三角验证** 合理价值区间。回答：「这票值多少钱？现价隐含了什么预期？」
 
-**Who it's for:** Investors who have identified a candidate (via screening or research) and need to determine whether the current price offers a margin of safety — typically the final quantitative step before a buy/sell decision.
+**适合谁：** 已有候选股，买入前最后一道量化关。
 
-## Methodology: Triangulation
+**A 股/HK 注意：** 东财/akshare 财报可支撑 DCF 与倍数；**卖方一致预期目标价在 A 股常缺失**，脚本会自动降权或跳过分析师法，勿强行解读。
 
-No single valuation method is reliable alone. Each captures a different dimension of value:
+## 数据来源
 
-| Method | Type | Question it answers | Weight |
-|--------|------|---------------------|--------|
-| DCF (5-year) | Intrinsic | What are the future cash flows worth today? | 30% |
-| P/E Multiple | Relative | What do peers pay per dollar of earnings? | 20% |
-| EV/EBITDA | Relative | What's the operating business worth, capital-structure neutral? | 20% |
-| FCF Yield | Relative | What cash-flow yield does this investment offer? | 15% |
-| Analyst Consensus | Market | What does the sell-side expect? | 15% |
-| Reverse DCF | Insight | What growth rate justifies the current price? | — (not scored) |
+| 市场 | 数据源 | 说明 |
+|------|--------|------|
+| A 股 | akshare + 东财 | DCF、PE、PB、EV/EBITDA；共识价常无 |
+| 港股 | akshare | 部分字段缺失时用历史 CAGR 兜底 |
+| 美股 | yfinance | 含 analyst consensus |
 
-**Why these weights:** DCF gets the highest weight because it's the only method independent of market pricing — it forces explicit assumptions about growth and risk. Multiples (P/E, EV/EBITDA) are widely used but assume the market prices comparable companies correctly. Analyst consensus is a useful sanity check but reflects sell-side bias (typically optimistic). Reverse DCF doesn't produce a fair value — it produces an insight about what the market believes.
+行业倍数预设见脚本内 `_CN_MULTIPLES` / `_HK_MULTIPLES`（按申万/东财行业关键词映射）。
 
-**Adaptive weights:** If a method lacks data (e.g., banks have no EBITDA/FCF), its weight is redistributed proportionally to available methods. The script reports the actual weights applied.
+## 方法一览
 
-### DCF: The Intrinsic Anchor
+| 方法 | 类型 | 回答的问题 | 权重 |
+|------|------|------------|------|
+| DCF（5 年） | 绝对 | 未来现金流现值 | 30% |
+| PE 倍数 | 相对 | 盈利定价 | 20% |
+| EV/EBITDA | 相对 | 资本结构中性运营估值 | 20% |
+| FCF 收益率 | 相对 | 股东真实现金回报 | 15% |
+| 分析师共识 | 市场 | 卖方预期（A 股常缺） | 15% |
+| 反向 DCF | 洞察 | 现价隐含 FCF 增速 | 不计入综合分 |
 
-A simplified but rigorous discounted cash flow model:
+缺数据的方法权重 **按比例** 分给其余方法；报告会写明实际权重。
 
-1. **Base FCF**: Multi-year average free cash flow (OCF - CapEx, averaged over available years) to smooth working capital volatility
-2. **Growth rate**: Analyst next-year revenue growth estimate → implied EPS growth (forward/trailing) → historical CAGR → 5% default
-3. **Projection**: 5 years of FCF growth
-4. **Terminal value**: Gordon growth model (perpetuity at 2.5% terminal growth)
-5. **Discount rate**: WACC from CAPM (risk-free + β × 6% ERP, adjusted for debt)
-6. **Fair value**: (PV of projected FCFs + PV of terminal value - net debt) / shares
+### DCF 要点
 
-Three scenarios vary growth and WACC:
-- **Bear**: growth × 0.5, WACC + 2pp
-- **Base**: growth as estimated, WACC as computed
-- **Bull**: growth × 1.5, WACC - 1pp
+1. 基准 FCF：多年 OCF−Capex 均值，平滑营运资本波动  
+2. 增速：分析师预期 → forward/trailing EPS → 历史 CAGR → 默认 5%  
+3. 5 年显性期 + Gordon 永续（2.5%）  
+4. WACC：CAPM（无风险 + β×ERP，含杠杆调整）  
 
-**Key limitation:** Terminal value typically dominates (60-80% of total). This is inherent to all DCFs — the model is most useful for comparing scenarios, not producing a precise number.
+情景：
 
-### Reverse DCF: What Does the Market Expect?
+- **悲观**：增速 ×0.5，WACC +2pp  
+- **基准**：如上  
+- **乐观**：增速 ×1.5，WACC −1pp  
 
-Given the current stock price, solve backwards for the implied FCF growth rate:
+### 反向 DCF
 
-```
-Find g such that: DCF(FCF, g, WACC) = Current Market Cap + Net Debt
-```
+给定现价，反推市场隐含的 FCF 增速，与分析师/历史对比：
 
-Then compare implied growth to:
-- Analyst revenue growth estimate
-- Historical revenue CAGR
+- 隐含增速 >> 共识 → 定价偏乐观  
+- 隐含增速 << 历史 → 可能过度悲观  
 
-This answers whether the market's expectations are reasonable. If implied growth far exceeds analyst estimates, the stock may be pricing in optimism that isn't supported by consensus. If implied growth is below historical CAGR, the market may be too pessimistic.
+### 相对倍数
 
-### Relative Methods: Sector-Aware Multiples
+按 **行业** 给 bear/base/bull 倍数区间；A 股科技、消费、银行差异大。  
+脚本会在实际 PE/EV 超出区间时自动放宽 band。
 
-P/E, EV/EBITDA, and FCF Yield use sector-specific (bear, base, bull) multiple ranges defined in the script. This accounts for the fact that Technology trades at structurally higher multiples than Energy, and HK trades at a structural discount to US.
+### 局限
 
-- **P/E**: Uses forward EPS when available (stocks are priced on future earnings), trailing as fallback
-- **EV/EBITDA**: Capital-structure neutral — the best single multiple for cross-sector comparison (Damodaran)
-- **FCF Yield**: Investor's actual cash return perspective — lower yield = higher valuation
+- DCF 对增速/WACC 极敏感，终值常占 60–80%  
+- 银行 OCF 含存贷流，DCF/FCF 法不适用，靠 PE  
+- 高增长、负 FCF 公司主要看 PE/EV/共识  
+- A 股缺少一致预期时，综合价更依赖 DCF + 历史倍数
 
-### Aggregation
-
-The composite fair value is a weighted average (not median) of all available methods' bear/base/bull prices. This produces smoother ranges than median and properly reflects the relative importance of each method.
-
-### Academic Backing
-
-| Method | Research | Key insight |
-|--------|----------|-------------|
-| DCF | Damodaran (2012) *Investment Valuation* | Only truly intrinsic method; forces explicit assumptions |
-| Reverse DCF | Rappaport & Mauboussin (2001) *Expectations Investing* | Reframes valuation as expectations analysis |
-| P/E | Liu, Nissim & Thomas (2002) — earnings-based multiples | Forward P/E is the most accurate single multiple for equity valuation |
-| EV/EBITDA | Damodaran — preferred for cross-sector comparison | Removes capital structure and tax distortions |
-| FCF Yield | Lev & Thiagarajan (1993) — cash flow signals | Cash-based metrics less susceptible to accounting manipulation |
-
-### Limitations
-
-- **DCF sensitivity**: Small changes in growth or WACC produce large changes in fair value. The bear/bull range captures this, but interpret with caution.
-- **Sector multiples**: Base ranges in the script are starting points. The script auto-expands them when the stock's actual P/E or EV/EBITDA falls outside the range (×1.1 above, ×0.8 below), but the hardcoded center may still lag market regime shifts.
-- **Financial sector**: Banks' OCF-CapEx "FCF" is meaningless (dominated by loan/deposit flows), so DCF and FCF Yield are excluded. Valuation relies on P/E + Analyst consensus.
-- **High-growth companies**: If FCF is negative, DCF and FCF Yield are unavailable. P/E + EV/EBITDA + Analyst carry the analysis.
-- **Low FCF-to-earnings conversion**: Some businesses (e.g., KO) structurally convert less earnings to FCF due to working capital intensity. FCF-based methods will give lower valuations than earnings-based ones — this is a feature, not a bug, but interpret the divergence.
-
-## Script Usage
+## 脚本用法
 
 ```bash
-python3 scripts/fetch_data.py AAPL              # Single stock
-python3 scripts/fetch_data.py NVDA MSFT GOOGL    # Multiple stocks
-python3 scripts/fetch_data.py 0700.HK            # HK market (auto-detected)
-python3 scripts/fetch_data.py 600519.SS           # CN A-share
+python3 scripts/fetch_data.py 600519.SS           # 茅台
+python3 scripts/fetch_data.py 002167.SZ           # 东方锆业
+python3 scripts/fetch_data.py 0700.HK             # 腾讯
+python3 scripts/fetch_data.py NVDA MSFT           # 美股对比
 ```
 
-**Output**: Markdown report (stdout) with fair value summary, method comparison table, reverse DCF insight, DCF assumptions, and key data. JSON data on stderr.
+**输出：** stdout 含 fair value 区间、各方法对比、反向 DCF、假设表；stderr JSON。
 
-## After Running the Script
+## 跑完脚本后你要做什么
 
-The script computes the numbers. Your job is to synthesize them into a valuation opinion.
+### 1. 先给估值结论
 
-### 1. Lead with the Verdict
+现价 vs 基准合理价：便宜 / 合理 / 偏贵；给出 bear/base/bull 区间。
 
-State the composite fair value range and whether the stock is cheap, fair, or expensive:
+### 2. 方法分歧
 
-- "AAPL trades at $220, base fair value $225 — roughly fairly valued. The bear case ($165) assumes growth slows to 4%; the bull case ($310) requires sustained 15% growth."
-- "NVDA at $130 vs base fair value $180 — 38% upside. Even the bear case ($95) only requires growth to slow to half the current rate."
+DCF 低、PE 高 → 现金流增速跟不上盈利叙事；共识远高于 DCF → 卖方偏乐观。
 
-### 2. Explain Method Divergence
+### 3. 解读反向 DCF
 
-When methods disagree significantly, the divergence itself is informative:
+「市场定价未来 5 年 FCF 年化增 XX%，分析师只有 YY%」—— 这是 A 股特别有用的预期锚。
 
-- "DCF ($135) is well below P/E ($280) because AAPL's FCF growth (1.8% historical CAGR) is much lower than what the P/E multiple implies. This gap suggests the market is pricing in a growth re-acceleration that hasn't materialized in cash flows yet."
-- "Analyst consensus ($300) is above all other methods — sell-side may be anchoring on recent momentum."
+### 4. 敏感假设
 
-### 3. Interpret the Reverse DCF
+高 β 股 WACC 微调即大幅改价；成熟公司终值占比高 → 永续增长率假设关键。
 
-This is the most differentiated insight. Frame it as an expectations check:
+### 5. 决策衔接
 
-- "The market is pricing in 32% FCF growth for 5 years. Analyst estimate is 16%, historical is 2%. The implied growth is 2× analyst consensus — this is aggressive pricing."
-- "Implied growth of 8% vs 15% analyst estimate — the market is skeptical. If the company delivers anywhere near consensus, there's meaningful upside."
-
-### 4. Flag Assumptions That Matter Most
-
-Identify which DCF assumption drives the biggest swing:
-
-- For high-beta stocks: "WACC is 19% due to β=2.4 — a 2% change in WACC swings fair value by 40%. If you believe NVDA's beta will normalize as it matures, the base case shifts significantly higher."
-- For mature companies: "Terminal value is 75% of DCF — the 2.5% perpetuity growth assumption dominates. For a company with pricing power like AAPL, this may be conservative."
-
-### 5. Investment Implication
-
-Connect to a decision framework:
-
-- Recommend `business-quality` to assess whether the growth assumptions are achievable (moat durability)
-- Recommend `risk-framework` to size the position appropriately
-- Flag if the stock is in a valuation no-man's-land (not cheap enough to buy, not expensive enough to sell)
+- 增速能否兑现 → `business-quality`  
+- 仓位与止损 → 用户自有风控  
+- 估值鸡肋（不贵不便宜）→ 等待 catalyst 或换标的

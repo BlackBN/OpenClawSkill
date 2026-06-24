@@ -1,119 +1,102 @@
 ---
 name: business-quality
-description: "Buffett-style business quality analysis for individual companies. Evaluates whether a business has durable competitive advantages by examining capital efficiency (ROE, ROIC), pricing power (gross margin), earnings quality (FCF conversion), profitability consistency, and financial resilience over 5 years. Use this skill whenever the user wants to: assess a company's business quality or competitive moat, evaluate whether profitability is durable, compare quality across companies, check if a business has pricing power or earnings resilience, understand if a company is a 'good business' in the Buffett/Munger sense. Do NOT use for stock screening (stock-screener), sector allocation (sector-radar), or valuation/DCF analysis."
+description: "巴菲特/芒格式单股质地分析：ROE、ROIC、毛利率、现金流质量、盈利稳定性、财务安全。用户问公司好不好、有没有护城河、定价权、业绩是否真实、能否扛周期时使用。勿用于选股扫描、板块配置或DCF估值。"
 ---
 
-# business-quality
+# 生意质量分析（business-quality）
 
-**What it does:** Analyzes business quality through the lens of Buffett/Munger's investment framework. Uses 5-year financial history to answer: "Is this a good business with durable competitive advantages?"
+**做什么：** 用近 5 年财务数据，从 Buffett/Munger 框架回答：「这是不是一门好生意？竞争优势能否持续？」
 
-**Who it's for:** Investors doing deep research on specific companies — typically after stock-screener identifies candidates, before valuation-matrix prices them.
+**适合谁：** `stock-screener` 筛出候选后、`valuation-matrix` 定价前的深度定性+定量步骤。
 
-## Methodology: Buffett/Munger Quality Framework
+**设计参考：** Piotroski F-Score（杠杆/流动性）、AQR Quality Minus Junk、Novy-Marx 毛利率因子；A 股增加 **ST 风险警示** 自动标注。
 
-Buffett and Munger evaluate a business by asking five fundamental questions. Each question has quantitative evidence the script computes, and qualitative judgment the LLM must provide.
+## 数据来源
 
-### The 5 Business Questions
+| 市场 | 数据源 | 代码格式 |
+|------|--------|----------|
+| **A 股** | akshare + 东方财富 | `002167.SZ`、`600519.SS`、`002167` |
+| **港股** | akshare | `0700.HK`、`00700` |
+| **美股** | yfinance | `AAPL`、`NVDA` |
 
-| # | Business Question | Buffett/Munger Origin | Financial Evidence (Script) | Qualitative Judgment (LLM) |
-|---|------------------|----------------------|----------------------------|---------------------------|
-| 1 | **Does it earn high returns on capital?** | "The best business is a royalty on the growth of others" | ROE, ROIC levels | Why — moat source (network effects, switching costs, brand, cost advantage, efficient scale) |
-| 2 | **Does it have pricing power?** | "The single most important decision in evaluating a business is pricing power" | Gross margin level | Where — which products/segments, vs. competitors |
-| 3 | **Are earnings real cash?** | "Owner earnings" = real FCF, not accounting artifacts | OCF / Net Income ratio | Sustainability — capex requirements, working capital dynamics |
-| 4 | **Is the profitability consistent?** | "I want businesses with consistent operating history" | ROE coefficient of variation | Source — recurring revenue, contractual cash flows, or cyclical luck |
-| 5 | **Can it survive adversity?** | "Only when the tide goes out do you discover who's been swimming naked" | Debt/Equity ratio | Context — industry leverage norms, debt maturity, interest coverage |
+安装：`pip install -r skills/shared/requirements.txt`
 
-The script provides **financial evidence**. The LLM provides **business judgment**. Neither alone is sufficient.
+## 五个核心问题
 
-### Academic Backing
+| # | 问题 | 脚本证据 | 你需要补充的判断 |
+|---|------|----------|------------------|
+| 1 | 资本回报高吗？ | ROE、ROIC | 护城河来源：品牌、切换成本、网络效应、成本优势 |
+| 2 | 有定价权吗？ | 毛利率水平与趋势 | 哪些产品/区域能涨价 |
+| 3 | 利润是真金白银吗？ | 经营现金流/净利润 | 资本开支、营运资本是否吞噬现金 |
+| 4 | 盈利稳定吗？ | ROE 变异系数 | 周期 luck vs 经常性收入 |
+| 5 | 能扛住逆境吗？ | 资产负债率 | 行业杠杆常态、到期债务、利息保障 |
 
-| Dimension | Research | Why it matters |
-|-----------|----------|----------------|
-| ROE | DuPont framework; Buffett's letters | Primary capital efficiency — wide-moat businesses sustain ROE >20% |
-| ROIC | McKinsey *Valuation*; Greenwald *Competition Demystified* | Strips leverage from ROE — true operating efficiency. ROIC > WACC = value creation |
-| Gross Margin | Novy-Marx (2013) — gross profitability is the best single predictor of stock returns | Captures pricing power before SGA/R&D; most direct moat signal |
-| FCF Quality | Sloan (1996) accruals anomaly — high accruals predict low future returns | OCF/NI > 1.0 means earnings are backed by real cash, not accounting |
-| Stability | AQR "Quality Minus Junk" (Asness et al., 2019) — low earnings volatility is a quality signal | Consistent returns = durable advantage, not cyclical luck |
-| Financial Health | Piotroski F-Score (2000) — 3 of 9 signals are leverage/liquidity | Low leverage = ability to survive downturns and invest counter-cyclically |
+脚本给 **数字证据**，你补 **商业判断**，两者缺一不可。
 
-### Limitations
+## 六维评分（0–100）
 
-- **ROE distortion**: Buybacks reduce equity, inflating ROE (AAPL 197%). The script flags ROE >100% and ROIC compensates.
-- **Cyclical businesses**: Trailing metrics score cyclicals high at peak. A semiconductor at 80% gross margin may be at cycle peak.
-- **Financial sector**: Banks lack gross margin and meaningful ROIC. Dynamic weight redistribution handles this, but fewer dimensions = lower confidence.
-- **Point-in-time**: All data is trailing. Forward estimates not included.
+| 维度 | 权重 | 优秀(100) | 良好(60) |
+|------|------|-----------|----------|
+| ROE 水平 | 25% | 均值 >20% | >15% |
+| ROIC 水平 | 20% | 均值 >15% | >10% |
+| 毛利率 | 20% | 均值 >50% | >30% |
+| 现金流质量 | 15% | OCF/NI >1.2 | >1.0 |
+| 稳定性 | 10% | ROE 波动低 | 中等 |
+| 财务健康 | 10% | D/E <0.3 | <2.0 |
 
-## 6-Dimension Scoring Model (0-100)
+**动态降权：** 银行缺毛利率/ROIC、预亏股缺部分指标时，权重按比例分给可用维度。
 
-| Dimension | Weight | Excellent (100) | Good (60) | Maps to Question |
-|-----------|--------|-----------------|-----------|-----------------|
-| ROE Level | 25% | avg >20% | avg >15% | #1 Capital efficiency |
-| ROIC Level | 20% | avg >15% | avg >10% | #1 True operating efficiency |
-| Gross Margin | 20% | avg >50% | avg >30% | #2 Pricing power |
-| FCF Quality | 15% | OCF/NI >1.2x | OCF/NI >1.0x | #3 Earnings reality |
-| Stability | 10% | Low ROE variance | Moderate variance | #4 Consistency |
-| Financial Health | 10% | D/E <0.3 | D/E <2.0 | #5 Resilience |
+### 护城河评级
 
-**Dynamic weight redistribution**: When dimensions are unavailable (banks: no gross margin, no ROIC), weights redistribute proportionally to available dimensions. JPM scored on 4 of 6 dimensions is still a fair assessment.
+| 评级 | 条件 |
+|------|------|
+| **宽护城河** | 得分 ≥75 且（平均 ROE ≥20% 或多数年份 ROE>20%） |
+| **窄护城河** | 得分 ≥55，或 ROE≥15% 且得分 ≥40 |
+| **无护城河** | 低于上述 |
 
-### Moat Rating
+### A 股特别提示
 
-| Rating | Criteria |
-|--------|----------|
-| **Wide Moat** | Score >= 75 AND (avg ROE >= 20% OR 75%+ of years ROE >20%) |
-| **Wide Moat** | Score >= 75 AND avg ROE >= 15% |
-| **Narrow Moat** | Score >= 55 OR (avg ROE >= 15% AND score >= 40) |
-| **No Moat** | Below all thresholds |
+- 名称含 ST/*ST → 报告标注 **退市与流动性风险**
+- ROE>100% 常见于回购缩股，脚本会 flag
+- 周期股在景气顶部的毛利率/ROE 可能虚高
 
-## Script Usage
+## 脚本用法
 
 ```bash
-python3 scripts/fetch_data.py AAPL              # Single company
-python3 scripts/fetch_data.py AAPL MSFT JPM NVDA # Comparison
-python3 scripts/fetch_data.py 0700.HK 9988.HK   # HK market
+python3 scripts/fetch_data.py 002167.SZ              # 东方锆业
+python3 scripts/fetch_data.py 600519.SS 000858.SZ    # 茅台 vs 五粮液
+python3 scripts/fetch_data.py 0700.HK 9988.HK        # 腾讯 vs 阿里
+python3 scripts/fetch_data.py AAPL                   # 美股
 ```
 
-**Output**: Markdown report (stdout) with metrics table, trends, scoring breakdown. JSON data on stderr.
+**输出：** stdout Markdown 报告；stderr JSON 原始数据。
 
-## After Running the Script
+## 跑完脚本后你要做什么
 
-The script answers "what are the numbers." Your job is to answer the 5 business questions.
+### 1. 先给结论
 
-### 1. State the Verdict and Score Drivers
+质量分、护城河等级、哪几维拉高/拉低。例：「得分 48.9，无护城河：ROE/ROIC 数据不全导致盈利维度降权，毛利率中等，负债可控。」
 
-Lead with the quality score and moat rating, then break down which dimensions drove the score up or down:
+### 2. 回答五个问题
 
-- "MSFT scores 91.2 (Wide Moat): ROE 35% and ROIC 29% reflect exceptional capital efficiency. Gross margin 69% is the financial signature of software economics. FCF conversion 1.3x confirms earnings are real cash."
-- "JPM scores 58.1 (Narrow Moat): scored on 4 of 6 dimensions (no gross margin/ROIC for banks). Strong ROE stability (CV 0.08) but financial_health scores low due to inherent banking leverage."
+- **资本效率**：高 ROE 来自杠杆还是真实运营？（杜邦拆解）
+- **定价权**：相对同行能否维持毛利？
+- **现金流**：扩产 Capex 是否阶段性压制 FCF？
+- **稳定性**：是订阅/长单还是 commodity 周期？
+- **韧性**：净现金还是高杠杆扩张期？
 
-### 2. Answer the 5 Business Questions
+### 3. 护城河趋势
 
-This is where you add the most value. For each company, answer the questions the script cannot:
+- **widening**：ROIC、毛利双升
+- **stable**：指标平稳
+- **narrowing**：竞争加剧导致毛利/ROIC 下行
 
-- **Q1 (Capital efficiency)** — Where does the high ROE come from? Identify the Dorsey moat source: "MSFT's 35% ROE comes from **switching costs** (M365 + Azure + Teams ecosystem lock-in) and **network effects** (developer platform)."
-- **Q2 (Pricing power)** — What gives this business pricing power? "NVDA's 73% gross margin comes from near-monopoly in AI training GPUs. But AMD MI300X and custom ASICs from Google/Amazon are emerging alternatives."
-- **Q3 (Earnings quality)** — Is the FCF sustainable? "AAPL's 1.2x FCF conversion reflects capital-light hardware + services model with negative working capital cycle."
-- **Q4 (Consistency)** — Is the stability structural or circumstantial? "MSFT's low ROE variance reflects recurring enterprise subscriptions (80%+ of revenue). NVDA's high variance reflects GPU demand cyclicality."
-- **Q5 (Resilience)** — Can it survive a downturn? "AAPL has $60B net cash — fortress balance sheet. JPM's high D/E is structural for banking but 15% ROE through credit cycles shows resilience."
+### 4. 标注失真
 
-Use your own knowledge for well-known companies. Only web search for unfamiliar businesses.
+回购抬 ROE、周期顶部、金融股指标缺失、A 股业绩变脸/大额商誉（需结合公告）。
 
-### 3. Assess Moat Trend
+### 5. 下一步
 
-The score is a snapshot. The trend tells you where the moat is heading. Use ROIC trend and margin trend from the script as evidence, then make a directional call:
-
-- **Widening**: ROIC and margins both improving — competitive advantage is strengthening. "AAPL's ROIC rose from 59% to 77% while gross margin expanded from 43% to 47% — Services mix shift is widening the moat."
-- **Stable**: Metrics flat or mixed — moat intact but not growing. "MSFT's margins are rock-steady at 69% but ROIC is declining from 32% to 27% — moat is stable, diluted by Activision acquisition, not by competition."
-- **Narrowing**: ROIC or margins declining due to competitive pressure — moat under threat. "If NVDA's gross margin falls below 65% while AMD gains share, that signals moat erosion, not just cycle normalization."
-
-### 4. Flag Distortions
-
-- ROE >100% from buyback-reduced equity (AAPL, SBUX)
-- Cyclical peak inflating margins (semiconductors, commodities at peak)
-- Missing dimensions reducing confidence (banks, pre-profit companies)
-
-### 5. Recommend Next Steps
-
-- `stock-screener` to find comparable companies in the same sector
-- `valuation-matrix` for DCF or comparable valuation on companies with strong quality
-- For comparisons, highlight which deserve deeper research vs. which to eliminate
+- 同行业对比 → `competitor-analysis`
+- 质地好再定价 → `valuation-matrix`
+- 找同类候选 → `stock-screener`

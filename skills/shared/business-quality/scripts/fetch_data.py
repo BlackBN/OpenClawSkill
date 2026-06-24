@@ -9,36 +9,21 @@ Usage:
 
 import sys, json
 from datetime import datetime
+from pathlib import Path
 
+_SHARED = Path(__file__).resolve().parents[2]
+if str(_SHARED) not in sys.path:
+    sys.path.insert(0, str(_SHARED))
 
-def detect_market(ticker: str) -> str:
-    """Detect market from ticker suffix."""
-    t = ticker.upper().strip()
-    if t.endswith(".HK"): return "HK"
-    if t.endswith(".SS") or t.endswith(".SZ"): return "CN"
-    if t.endswith(".T"): return "JP"
-    if t.endswith(".L"): return "UK"
-    if t.endswith(".DE"): return "DE"
-    if t.endswith(".PA"): return "FR"
-    if t.endswith(".AS"): return "NL"
-    return "US"
-
-
-_TAX_RATES = {
-    "US": 0.21, "HK": 0.165, "CN": 0.25, "JP": 0.30,
-    "UK": 0.25, "DE": 0.30, "FR": 0.25, "NL": 0.26,
-}
-
-
-def get_tax_rate(market: str) -> float:
-    return _TAX_RATES.get(market, 0.21)
+from _data.provider import detect_market, get_annual_financials, get_tax_rate  # noqa: E402
+from _data.cn import is_st_stock  # noqa: E402
+from _data.freshness import format_freshness_md  # noqa: E402
 
 try:
-    import yfinance as yf
     import pandas as pd
     import numpy as np
 except ImportError as e:
-    print(f"ERROR: Missing dependency — {e}. Run: pip install yfinance pandas numpy", file=sys.stderr)
+    print(f"ERROR: Missing dependency — {e}. Run: pip install akshare pandas numpy", file=sys.stderr)
     sys.exit(1)
 
 
@@ -103,45 +88,26 @@ def score_inverse(values, excellent, ceiling):
     return 0.0
 
 
-def extract_row(df, row_names, columns):
-    """Try multiple row names, return first match."""
-    if df is None or df.empty:
-        return {}
-    for name in (row_names if isinstance(row_names, list) else [row_names]):
-        if name in df.index:
-            return {str(c.year) if hasattr(c, "year") else str(c)[:4]: safe_float(df.loc[name, c]) for c in columns}
-    return {}
-
-
 def fetch_quality(ticker_sym):
-    t = yf.Ticker(ticker_sym)
-    info = t.info
+    fin = get_annual_financials(ticker_sym, years=5)
+    if fin.get("error"):
+        return {"error": fin["error"], "ticker": ticker_sym}
+
     market = detect_market(ticker_sym)
     tax_rate = get_tax_rate(market)
-    name = info.get("longName") or info.get("shortName", ticker_sym)
-
-    try:
-        fin = t.financials
-        bs = t.balance_sheet
-        cf = t.cashflow
-    except Exception as e:
-        return {"error": str(e), "ticker": ticker_sym}
-
-    if fin is None or fin.empty:
-        return {"error": "No financial data", "ticker": ticker_sym}
-
-    cols = fin.columns[:5]
-    year_key = lambda c: str(c.year) if hasattr(c, "year") else str(c)[:4]
-
-    # Extract raw data
-    revenue = extract_row(fin, "Total Revenue", cols)
-    gross_profit = extract_row(fin, "Gross Profit", cols)
-    net_income = extract_row(fin, "Net Income", cols)
-    ebit = extract_row(fin, ["EBIT", "Operating Income"], cols)
-    equity = extract_row(bs, ["Total Equity Gross Minority Interest", "Stockholders Equity"], bs.columns[:5] if bs is not None and not bs.empty else [])
-    total_debt = extract_row(bs, "Total Debt", bs.columns[:5] if bs is not None and not bs.empty else [])
-    cash = extract_row(bs, ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"], bs.columns[:5] if bs is not None and not bs.empty else [])
-    ocf = extract_row(cf, ["Operating Cash Flow", "Total Cash From Operating Activities", "Cash Flow From Continuing Operating Activities"], cf.columns[:5] if cf is not None and not cf.empty else [])
+    name = fin.get("name", ticker_sym)
+    if is_st_stock(name):
+        st_flag = "ST/风险警示股 — 流动性与退市风险高，需额外谨慎"
+    else:
+        st_flag = None
+    revenue = fin.get("revenue", {})
+    gross_profit = fin.get("gross_profit", {})
+    net_income = fin.get("net_income", {})
+    ebit = fin.get("ebit", {})
+    equity = fin.get("equity", {})
+    total_debt = fin.get("total_debt", {})
+    cash = fin.get("cash", {})
+    ocf = fin.get("ocf", {})
 
     sorted_years = sorted(set(revenue.keys()) | set(net_income.keys()))
 
@@ -208,6 +174,8 @@ def fetch_quality(ticker_sym):
 
     # Flags
     flags = []
+    if st_flag:
+        flags.append(st_flag)
     if any(v is not None and v > 100 for v in roe_s):
         flags.append("ROE >100% — likely distorted by share buybacks reducing equity; use ROIC for capital efficiency")
     unavailable = [k for k, v in dimensions.items() if v["score"] is None]
@@ -240,6 +208,8 @@ def fetch_quality(ticker_sym):
         "moat_rating": moat_rating,
         "flags": flags,
         "metrics": annual,
+        "ttm": fin.get("ttm") or {},
+        "freshness": fin.get("freshness") or {},
         "trends": {
             "roe": compute_trend(roe_s),
             "roic": compute_trend(roic_s),
@@ -279,6 +249,18 @@ def format_report(results):
 
         lines.append(f"## {r['ticker']} — {r['company_name']}")
         lines.append(f"\n**Quality Score: {r['quality_score']}/100 — {r['moat_rating']}**\n")
+        lines.append(format_freshness_md(None, r))
+
+        ttm = r.get("ttm") or {}
+        if ttm.get("revenue"):
+            rev_b = round(ttm["revenue"] / 1e8, 2)
+            ni_b = round(ttm["net_income"] / 1e8, 2) if ttm.get("net_income") else None
+            ttm_line = f"**TTM ({ttm.get('as_of_period', '—')})**：营收 {rev_b} 亿"
+            if ni_b is not None:
+                ttm_line += f"，净利润 {ni_b} 亿"
+            if ttm.get("revenue_yoy_pct") is not None:
+                ttm_line += f"，营收 YoY {ttm['revenue_yoy_pct']:+.1f}%"
+            lines.append(ttm_line + "\n")
 
         if r.get("flags"):
             for f in r["flags"]:

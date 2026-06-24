@@ -9,36 +9,20 @@ Usage:
 
 import sys, json
 from datetime import datetime
+from pathlib import Path
 
+_SHARED = Path(__file__).resolve().parents[2]
+if str(_SHARED) not in sys.path:
+    sys.path.insert(0, str(_SHARED))
 
-def detect_market(ticker: str) -> str:
-    """Detect market from ticker suffix."""
-    t = ticker.upper().strip()
-    if t.endswith(".HK"): return "HK"
-    if t.endswith(".SS") or t.endswith(".SZ"): return "CN"
-    if t.endswith(".T"): return "JP"
-    if t.endswith(".L"): return "UK"
-    if t.endswith(".DE"): return "DE"
-    if t.endswith(".PA"): return "FR"
-    if t.endswith(".AS"): return "NL"
-    return "US"
-
-
-_TAX_RATES = {
-    "US": 0.21, "HK": 0.165, "CN": 0.25, "JP": 0.30,
-    "UK": 0.25, "DE": 0.30, "FR": 0.25, "NL": 0.26,
-}
-
-
-def get_tax_rate(market: str) -> float:
-    return _TAX_RATES.get(market, 0.21)
+from _data.provider import detect_market, get_annual_financials, get_tax_rate  # noqa: E402
+from _data.freshness import format_freshness_md  # noqa: E402
 
 try:
-    import yfinance as yf
     import pandas as pd
     import numpy as np
 except ImportError as e:
-    print(f"ERROR: Missing dependency — {e}. Run: pip install yfinance pandas numpy", file=sys.stderr)
+    print(f"ERROR: Missing dependency — {e}. Run: pip install akshare pandas numpy", file=sys.stderr)
     sys.exit(1)
 
 
@@ -50,43 +34,23 @@ def safe_float(val, default=None):
         return default
 
 
-def extract_row(df, row_names, columns):
-    if df is None or df.empty:
-        return {}
-    for name in (row_names if isinstance(row_names, list) else [row_names]):
-        if name in df.index:
-            return {str(c.year) if hasattr(c, "year") else str(c)[:4]: safe_float(df.loc[name, c]) for c in columns}
-    return {}
-
-
 def fetch_company(ticker_sym):
-    t = yf.Ticker(ticker_sym)
-    info = t.info
+    fin = get_annual_financials(ticker_sym, years=4)
     market = detect_market(ticker_sym)
     tax_rate = get_tax_rate(market)
-    name = info.get("longName") or info.get("shortName", ticker_sym)
+    name = fin.get("name", ticker_sym)
 
-    try:
-        fin = t.financials
-        bs = t.balance_sheet
-    except Exception as e:
-        return {"ticker": ticker_sym.upper(), "name": name, "error": str(e)}
+    if fin.get("error"):
+        return {"ticker": fin.get("ticker", ticker_sym.upper()), "name": name, "error": fin["error"]}
 
-    if fin is None or fin.empty:
-        return {"ticker": ticker_sym.upper(), "name": name, "error": "No financial data"}
-
-    cols = fin.columns[:4]  # up to 4 years for trend calculation
-
-    revenue = extract_row(fin, "Total Revenue", cols)
-    gross_profit = extract_row(fin, "Gross Profit", cols)
-    net_income = extract_row(fin, "Net Income", cols)
-    ebit = extract_row(fin, ["EBIT", "Operating Income"], cols)
-    rd = extract_row(fin, ["Research And Development", "Research Development"], cols)
-    equity = extract_row(bs, ["Total Equity Gross Minority Interest", "Stockholders Equity"],
-                         bs.columns[:4] if bs is not None and not bs.empty else [])
-    total_debt = extract_row(bs, "Total Debt", bs.columns[:4] if bs is not None and not bs.empty else [])
-    cash = extract_row(bs, ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"],
-                       bs.columns[:4] if bs is not None and not bs.empty else [])
+    revenue = fin.get("revenue", {})
+    gross_profit = fin.get("gross_profit", {})
+    net_income = fin.get("net_income", {})
+    ebit = fin.get("ebit", {})
+    rd = fin.get("rd", {})
+    equity = fin.get("equity", {})
+    total_debt = fin.get("total_debt", {})
+    cash = fin.get("cash", {})
 
     sorted_years = sorted(revenue.keys())
     annual = {}
@@ -134,11 +98,12 @@ def fetch_company(ticker_sym):
     latest_rev_B = round(rev_vals[-1] / 1e9, 2) if rev_vals else None
 
     return {
-        "ticker": ticker_sym.upper(),
+        "ticker": fin.get("ticker", ticker_sym.upper()),
         "name": name,
         "annual": annual,
         "summary": {
             "latest_revenue_B": latest_rev_B,
+            "latest_annual_period": sorted_years[-1] if sorted_years else None,
             "revenue_cagr_pct": rev_cagr,
             "avg_gross_margin_pct": round(sum(gm_vals) / len(gm_vals), 2) if gm_vals else None,
             "avg_net_margin_pct": round(sum(nm_vals) / len(nm_vals), 2) if nm_vals else None,
@@ -146,6 +111,8 @@ def fetch_company(ticker_sym):
             "avg_rd_intensity_pct": round(sum(rd_vals) / len(rd_vals), 2) if rd_vals else None,
             "avg_roic_pct": round(sum(roic_vals) / len(roic_vals), 2) if roic_vals else None,
         },
+        "freshness": fin.get("freshness") or {},
+        "ttm": fin.get("ttm") or {},
     }
 
 
@@ -212,7 +179,9 @@ def compute_revenue_share(companies):
 def format_report(companies, composite, rev_shares):
     lines = []
     lines.append("# Competitive Dynamics Analysis")
-    lines.append(f"\n_Generated: {datetime.now().strftime('%Y-%m-%d')}_\n")
+    lines.append(f"\n_Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}_\n")
+    if companies and not companies[0].get("error"):
+        lines.append(format_freshness_md(None, companies[0]))
 
     # Sort by composite score
     ranked = sorted(

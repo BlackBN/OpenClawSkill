@@ -1,115 +1,92 @@
 ---
 name: competitor-analysis
-description: "Rank competitors within an industry by relative competitive position. Evaluates which company in a peer group has the strongest competitive trajectory by comparing revenue growth, profitability, efficiency, margin momentum, and R&D investment on a rank-based scoring system. Use this skill whenever the user wants to: compare companies competing in the same industry, determine which competitor is gaining or losing ground, analyze competitive positioning within a peer set, decide which company in a sector is most worth investing in, understand revenue share dynamics among rivals, or do competitor analysis. Do NOT use for single-company quality analysis (business-quality), stock screening across sectors (stock-screener), or valuation/DCF analysis."
+description: "同行业竞争对手横向排名：营收增速、毛利率、净利率、毛利动量、研发强度。用户要比同行谁更强、谁抢份额、行业内选龙头时使用。勿用于单股质地(business-quality)、跨行业选股(stock-screener)或估值。"
 ---
 
-# competitor-analysis
+# 竞争对手分析（competitor-analysis）
 
-**What it does:** Ranks competitors within an industry by relative competitive position. Answers: "Among these rivals, which has the strongest competitive trajectory and why?"
+**做什么：** 在同一组同业公司里，用 **相对排名** 判断谁竞争地位最强。回答：「这几个对手里，谁更值得买？」
 
-**Who it's for:** Investors who have identified an attractive industry and need to pick the best company within it — typically after stock-screener identifies the sector, before business-quality deep-dives on the winner.
+**适合谁：** 定好赛道后选龙头——通常在 `stock-screener` 或 `sector-radar` 之后、`business-quality` 之前。
 
-## Methodology: Relative Competitive Positioning
+**设计参考：** Porter 五力/相对竞争地位；BCG 矩阵中「份额×增速」思路；Lev & Sougiannis 研发强度与长期回报。
 
-### Why Relative, Not Absolute
+## 数据来源
 
-business-quality asks "Is this a good business?" using absolute thresholds (ROE >20% = excellent). competitor-analysis asks "Which competitor is strongest?" using peer-relative ranking. A 15% gross margin is terrible in software but dominant in grocery retail. Absolute thresholds fail across industries; rank-based scoring works universally.
+| 市场 | 数据源 | 示例 |
+|------|--------|------|
+| A 股 | akshare / 同花顺财报 | `002167.SZ 600111.SS 600392.SS` |
+| 港股 | akshare 东财 | `0700.HK 9988.HK 9618.HK` |
+| 美股 | yfinance | `NVDA AMD INTC` |
 
-This follows the core insight from Porter's competitive strategy: competitive advantage is meaningful only relative to rivals in the same industry. A company's financials matter not in isolation, but in comparison to the peer set it competes against.
+## 为什么用相对排名而非绝对阈值
 
-### 5 Competitive Dimensions
+`business-quality` 问「好不好」（ROE>20% 算优秀）。  
+`competitor-analysis` 问「谁更好」——15% 毛利率在软件业很差，在超市业可能领先。**必须在同一 peer set 内排名。**
 
-| # | Dimension | Weight | What it measures | Higher = Better |
-|---|-----------|--------|------------------|-----------------|
-| 1 | Revenue Growth | 30% | Revenue CAGR over available years | Yes |
-| 2 | Profitability | 25% | Average gross margin % | Yes |
-| 3 | Efficiency | 20% | Average net margin % | Yes |
-| 4 | Margin Momentum | 15% | Gross margin change (first→last year, pp) | Yes |
-| 5 | R&D Investment | 10% | Average R&D as % of revenue | Yes |
+## 五维竞争得分
 
-**Why these weights:** Revenue growth dominates because gaining share is the clearest signal of competitive strength. Profitability and efficiency capture current positioning. Margin momentum reveals trajectory — a company with expanding margins is strengthening its position. R&D investment is a leading indicator of future competitiveness, weighted lower because R&D-to-revenue varies enormously by industry.
+| # | 维度 | 权重 | 含义 | 越高越好 |
+|---|------|------|------|----------|
+| 1 | 营收增速 | 30% | 可用年份营收 CAGR | ✓ |
+| 2 | 盈利能力 | 25% | 平均毛利率 | ✓ |
+| 3 | 运营效率 | 20% | 平均净利率 | ✓ |
+| 4 | 毛利动量 | 15% | 首年→末年毛利率变化（pp） | ✓ |
+| 5 | 研发强度 | 10% | 研发/营收均值 | ✓ |
 
-### Rank-Based Scoring
+**排名公式：** 第 1 名 100 分，最后一名 0 分，`score = (N-rank)/(N-1)×100`，再加权合成。
 
-All scoring is relative within the peer set:
-- Rank 1 = score 100, Rank N = score 0
-- Formula: `score = (N - rank) / (N - 1) × 100`
-- Composite score = weighted average of dimension scores
+**附加信息（不参与打分）：** 营收占比（集中度）、ROIC（供参考，避免与 business-quality 重复）。
 
-This means scores are only meaningful within the specific comparison. A score of 80 means "dominant in this peer set," not "objectively excellent."
+### 使用注意
 
-### Additional Context (Not Scored)
+- **peer 怎么选决定结论**：NVDA 对 AMD/INTC  vs  对 MSFT/GOOGL 结论不同
+- **至少 3 家** 才有区分度；2 家必然一高一低
+- 消费、公用事业 R&D 低，研发维度权重天然较低
+- 全是历史数据，「以价换量」抢份额可能损害利润
 
-- **Revenue Share**: Each company's latest revenue as % of peer set total — shows market concentration
-- **ROIC**: Displayed in annual data for capital efficiency context, but not scored (to avoid overlap with business-quality)
-
-### Academic Backing
-
-| Dimension | Research | Why it matters |
-|-----------|----------|----------------|
-| Revenue Growth | BCG growth-share matrix; McKinsey *Strategy Beyond the Hockey Stick* | Revenue growth relative to peers is the strongest predictor of long-term value creation |
-| Gross Margin | Novy-Marx (2013) gross profitability factor | Pricing power relative to industry peers signals competitive advantage |
-| Net Margin | DuPont decomposition — profit margin component | Operating leverage and cost discipline vs. peers |
-| Margin Momentum | Porter's dynamic competitive analysis | Expanding margins signal strengthening position; contracting margins signal competitive pressure |
-| R&D Intensity | Lev & Sougiannis (1996) — R&D capitalization and stock returns | R&D spending relative to peers predicts future competitive position, especially in technology |
-
-### Limitations
-
-- **Peer set selection matters**: Results depend entirely on which companies are compared. Comparing NVDA to AMD/INTC/QCOM produces different insights than comparing NVDA to MSFT/GOOGL/AMZN.
-- **Rank compression with few peers**: With only 2 companies, one always scores 100 and the other 0. Minimum 3 peers recommended for meaningful differentiation.
-- **R&D not universal**: Consumer staples, utilities, financials often have negligible R&D. The dimension still scores (whoever spends most ranks highest) but carries less analytical weight.
-- **Trailing data**: All metrics are historical. A company gaining share today may be doing so unprofitably.
-
-## Script Usage
+## 脚本用法
 
 ```bash
-python3 scripts/fetch_data.py NVDA AMD INTC QCOM       # Semiconductor peers
-python3 scripts/fetch_data.py MSFT GOOGL META           # Big tech comparison
-python3 scripts/fetch_data.py 0700.HK 9988.HK 9618.HK  # HK internet peers
+# A 股：锆/稀土产业链
+python3 scripts/fetch_data.py 002167.SZ 600111.SS 600392.SS 000831.SZ
+
+# 港股：互联网龙头
+python3 scripts/fetch_data.py 0700.HK 9988.HK 9618.HK
+
+# 美股：半导体
+python3 scripts/fetch_data.py NVDA AMD INTC QCOM
 ```
 
-All tickers are equal peers — no target/peer distinction. Order does not matter.
+所有代码 **地位对等**，顺序无关。
 
-**Output**: Markdown report (stdout) with ranking table, per-company annual data, and dimension scores. JSON data on stderr.
+**输出：** stdout 排名表 + 各公司年度明细；stderr JSON。
 
-## After Running the Script
+## 跑完脚本后你要做什么
 
-The script answers "who ranks where." Your job is to answer "why, and what does it mean for investment."
+### 1. 排名与分差
 
-### 1. State the Ranking and Key Differentiators
+谁第一、领先在哪一维、弱在哪一维。例：「A 营收增速第一但净利率垫底，可能在价格战抢份额。」
 
-Lead with the competitive ranking, then explain what separates the leader from the pack:
+### 2. 竞争动态
 
-- "NVDA dominates this peer set (score 90): #1 in growth (100% CAGR), profitability (69% GM), and efficiency (44% NM). Only weak spot is R&D intensity (15% vs INTC's 29%), but that's a denominator effect — NVDA's revenue grew 8x while R&D grew 2x."
-- "QCOM (48) and AMD (52) are closely matched — AMD leads on growth trajectory while QCOM leads on current profitability. Different competitive strategies, both viable."
+- **抢份额**：营收占比 + 增速同时上升
+- **失份额**：负增长 + 占比下滑
+- **格局**：毛利是收敛（竞争加剧）还是分化（龙头定价）
 
-### 2. Analyze Competitive Dynamics
+### 3. 护城河解释数字
 
-Go beyond static rankings to explain the competitive forces at work:
+用 Dorsey 五类：网络效应、切换成本、无形资产、成本优势、有效规模。  
+例：「CUDA 生态 = 切换成本；龙头 GPU 架构领先 = 无形资产。」
 
-- **Who is gaining share?** Use revenue share + growth rate. "NVDA grew from 15% to 62% of peer-set revenue in 4 years — a historic share gain driven by AI training demand."
-- **Who is losing ground?** Negative growth + shrinking share. "INTC's revenue declined 5.7% CAGR while peers grew — structural share loss in both datacenter and client computing."
-- **Where is the competitive intensity?** Margin convergence or divergence. "AMD's margins are expanding toward QCOM's level — competitive gap is narrowing in mobile/embedded."
+### 4. 趋势判断
 
-### 3. Identify Moat Sources Behind the Numbers
+- **strengthening**：增速超 peers + 毛利扩张
+- **stable**：份额与毛利平稳
+- **weakening**：份额丢 + 毛利压缩
 
-The script shows the numbers; explain the competitive advantages that produce them:
+### 5. 投资含义
 
-- Use Pat Dorsey's 5 moat sources: network effects, switching costs, intangible assets (patents, brands), cost advantage, efficient scale
-- "NVDA's 69% gross margin comes from CUDA ecosystem lock-in (switching costs) + architectural lead in AI training (intangible assets). AMD's lower margin reflects its challenger position — must price below NVDA to win design wins."
-
-### 4. Assess Competitive Trajectory
-
-Use margin momentum and growth trends to make a directional call:
-
-- **Strengthening**: Growing faster than peers + expanding margins. "NVDA is pulling away — growth accelerating AND margins expanding. Classic winner-take-most dynamics."
-- **Stable**: Holding position relative to peers. "QCOM maintains steady 56% GM and 22% NM — defensive moat in mobile baseband, but not gaining ground."
-- **Weakening**: Losing share + contracting margins. "INTC's gross margin fell from 43% to 35% while losing revenue — competitive position is deteriorating across segments."
-
-### 5. Investment Implications
-
-Connect competitive position to investment decision:
-
-- Which companies deserve deeper research? Recommend `business-quality` for absolute quality assessment on top-ranked competitors.
-- Which companies to eliminate? Bottom-ranked with weakening trajectory can often be screened out.
-- What are the risks to the ranking? Identify catalysts that could reshuffle positioning (new product cycles, regulatory changes, M&A).
+- 排名前 1–2 → 建议 `business-quality` 深研
+- 末位且走弱 → 可剔除
+- 标注可能 reshuffle 的催化剂：新产品、政策、并购

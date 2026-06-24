@@ -24,6 +24,9 @@
 ```bash
 git clone https://github.com/zwaydot/alpha-skills.git
 cp -r alpha-skills/* ~/.openclaw/workspace/skills/
+
+# Python 依赖（A股/港股主路径 akshare，美股 yfinance）
+pip install -r skills/shared/requirements.txt
 ```
 
 Or install a single skill:

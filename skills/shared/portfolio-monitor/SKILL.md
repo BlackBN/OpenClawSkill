@@ -1,78 +1,97 @@
 ---
 name: portfolio-monitor
-description: Portfolio diagnostics — sector exposure, risk decomposition, benchmark comparison, correlation, and concentration analysis for weighted holdings. Use this when the user wants to analyze their portfolio, check diversification, understand risk attribution, compare against a benchmark, or evaluate position sizing.
+description: "持仓组合诊断：行业暴露、风险分解、基准对比、相关性、集中度(HHI)、最大回撤。用户分析自己的组合、分散度、风险贡献、相对沪深300/恒指表现时使用。"
 ---
 
-# portfolio-monitor
+# 组合监控（portfolio-monitor）
 
-Portfolio diagnostics grounded in Modern Portfolio Theory (Markowitz, 1952). The core insight: portfolio risk is not the weighted average of individual risks — it depends on how holdings move together. This skill quantifies that through covariance-based risk decomposition, benchmark-relative performance, and concentration analysis.
+**做什么：** 基于现代组合理论（Markowitz），量化持仓的 **风险结构** 而非简单加权波动。回答：「我的组合风险从哪来？分散够吗？相对基准表现如何？」
 
-## Methodology
+**适合谁：** 已有仓位（A 股/港股/美股可混合），需要复盘或再平衡前诊断。
 
-### Risk Decomposition (Marginal Contribution to Variance)
+## 数据来源
 
-Each holding's volatility contribution comes from the covariance matrix, not just its own volatility:
+| 市场 | K 线 | 默认基准 | 数据源 |
+|------|------|----------|--------|
+| A 股 | akshare/东财 | `510300.SS`（沪深300 ETF） | 默认 CN |
+| 港股 | akshare | `2800.HK` | |
+| 美股 | yfinance | `SPY` | |
+
+混合市场组合按 **多数持仓所属市场** 选基准与无风险利率。
+
+## 方法论
+
+### 风险分解（边际方差贡献）
 
 ```
-contribution_i = w_i × (Σ w_j × cov_ij) / portfolio_variance
+contribution_i = w_i × Σ(w_j × cov_ij) / portfolio_variance
 ```
 
-A stock can have 30% weight but contribute 50% of portfolio risk if it's volatile and highly correlated with other holdings. The **Over/Under** column flags this mismatch — positive means the position contributes more risk than its weight suggests.
+某股权重 30% 却贡献 50% 风险 → **风险超载**。Over/Under 列标出权重 vs 风险贡献 mismatch。
 
-### Benchmark Comparison
+### 基准对比
 
-Auto-selects benchmark by portfolio market: SPY (US), 2800.HK (HK), 510300.SS (CN). Computes:
-- Return, volatility, Sharpe, max drawdown — side by side with delta
-- Portfolio–benchmark correlation — how much the portfolio tracks the index
+自动匹配基准，输出：
 
-### Concentration (HHI)
+- 收益、波动、Sharpe、最大回撤（组合 vs 基准 + 差值）
+- 组合与基准相关系数
 
-Herfindahl–Hirschman Index at both holding and sector level:
-- HHI < 1500: diversified
-- 1500–2500: moderate
-- &gt; 2500: concentrated
+### 集中度（HHI）
 
-A portfolio can have low holding HHI but high sector HHI (e.g., 10 tech stocks equally weighted).
+- HHI < 1500：分散  
+- 1500–2500：中等  
+- \> 2500：集中  
 
-### Max Drawdown
+分别算 **个股 HHI** 与 **行业 HHI**（10 只科技股等权仍可能行业过度集中）。
 
-Peak-to-trough decline from 1-year daily cumulative returns. Captures tail risk that volatility misses.
+### 最大回撤
 
-## Script Usage
+近 1 年日频累计收益 peak-to-trough，补充波动率看不到的「痛感」。
+
+## 脚本用法
 
 ```bash
-python3 scripts/fetch_data.py "AAPL:30 MSFT:20 NVDA:50"
-python3 scripts/fetch_data.py "AAPL:25 MSFT:25 JPM:25 XOM:25"
+# A 股组合（权重会自动归一化）
+python3 scripts/fetch_data.py "002167.SZ:30 600111.SS:40 600392.SS:30"
+
+# 港股
 python3 scripts/fetch_data.py "0700.HK:40 9988.HK:30 1810.HK:30"
+
+# 美股
+python3 scripts/fetch_data.py "AAPL:30 MSFT:20 NVDA:50"
 ```
 
-Weights auto-normalize. Supports US, HK, CN, JP, UK tickers. Mixed-market portfolios use the majority market's benchmark and risk-free rate.
+格式：`代码:权重`，空格分隔多只股票。
 
-## Output Schema
+**输出：** stdout Markdown（持仓表、vs 基准、行业暴露、风险分解、相关矩阵、集中度）；stderr JSON。
 
-Markdown report (stdout) with: Holdings table, Performance vs Benchmark, Sector Exposure with visual bars, Risk Decomposition, Correlation Matrix, Concentration metrics.
+## 跑完脚本后你要做什么
 
-JSON (stderr) with all raw data for programmatic use.
+### 1. 风险预算
 
-## After Running the Script
+哪几只 **风险贡献 > 权重**？例：「NVDA 占 50% 仓位却贡献 66% 风险。」
 
-The script provides data. Your analysis should address:
+### 2. 相对基准
 
-1. **Risk budget assessment** — Compare each holding's weight vs volatility contribution. Flag positions where risk contribution exceeds weight by >5pp — these are risk-dominant positions. Example: "NVDA is 50% of your portfolio but drives 66.5% of risk due to its 45% annualized vol and moderate correlation with AAPL (0.49)."
+收益高但 Sharpe 低于基准 → 靠加风险而非选股。A 股组合对照 510300 看是否只是 beta 暴露。
 
-2. **Benchmark-relative diagnosis** — Is the portfolio taking more risk (higher vol) for adequate return? Compare Sharpe ratios. A portfolio with higher return but lower Sharpe than its benchmark is achieving returns through risk, not skill. Example: "Your portfolio returned +29% vs SPY's +17%, but Sharpe (0.52 vs 0.38) shows only modest risk-adjusted outperformance."
+### 3. 分散质量
 
-3. **Diversification quality** — Look at correlation matrix and sector exposure together. High pairwise correlations (>0.7) within the same sector compound concentration risk. Low correlations across sectors indicate genuine diversification. Example: "MSFT–XOM correlation of 0.09 means energy provides real diversification for your tech-heavy portfolio."
+同行业 pairwise 相关 >0.7 → 假分散；跨行业低相关才是真对冲。港股可加 REIT、公用事业降相关。
 
-4. **Drawdown context** — Max drawdown is the lived experience of the portfolio. A -24% drawdown means the investor saw a quarter of their capital vanish at some point. Compare to benchmark drawdown. Example: "Your -24% drawdown vs SPY's -16% means you experienced 50% worse pain during the selloff."
+### 4. 回撤语境
 
-5. **Actionable suggestions** — Based on the diagnostics, suggest specific improvements. If sector HHI is high, name specific sectors that could reduce risk. If one position dominates risk, quantify what trimming it would do. If drawdown is severe, note what caused it. Recommend `business-quality` for deep-diving into risk-dominant positions, or `valuation-matrix` if considering rebalancing. For HK portfolios, recommend HK-listed alternatives (e.g., REITs, utilities, financials); for US portfolios, suggest missing GICS sectors.
+组合 -24% vs 基准 -16% → 熊市多承受 50% 额外回撤，评估能否接受。
 
-## Interpreting Different Portfolio Types
+### 5. 可执行建议
 
-Tailor your diagnosis to the portfolio's character:
+-  trim 风险 dominant 仓位  
+- 补缺失行业降低 sector HHI  
+- 对核心持仓跑 `business-quality` / `valuation-matrix`  
 
-- **Concentrated growth** (3-5 tech/growth names): The main risk is sector concentration and single-name dominance. Focus on which position drives disproportionate risk and what happens when the sector rotates. A negative Sharpe ratio here means the growth bet is actively losing to cash.
-- **Balanced multi-sector** (6-15 names across sectors): Focus on whether the diversification is genuine (low cross-sector correlations) or illusory (many names, same factor exposure). Check if equal weights produce unequal risk contributions.
-- **Income/defensive** (utilities, staples, REITs, dividend stocks): Expect lower volatility and smaller drawdowns than benchmark. The key question is whether the portfolio achieves adequate risk-adjusted return (Sharpe) despite lower absolute returns. A Sharpe above the benchmark with lower drawdown is a success for this archetype.
-- **Cross-market** (mixed US/HK/CN): Note that the benchmark may not fully represent the portfolio. Currency risk adds a dimension not captured in the correlation matrix. Holdings in different markets may show lower correlations during normal times but can correlate during global risk-off events.
+### 按组合类型调整话术
+
+- **集中成长（3–5 只科技）**：盯板块轮动与单票风险  
+- **均衡多行业（6–15 只）**：看 factor 是否同质（全是高 beta 成长）  
+- **股息/防御**：Sharpe 与回撤比绝对收益更重要  
+- **跨 A/H/US**：基准 imperfect；全球 risk-off 时相关性会上来  

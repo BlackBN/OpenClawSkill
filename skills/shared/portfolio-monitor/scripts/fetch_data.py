@@ -12,54 +12,30 @@ Usage:
 import sys, json
 from datetime import datetime, timedelta
 from collections import Counter
+from pathlib import Path
 
+_SHARED = Path(__file__).resolve().parents[2]
+if str(_SHARED) not in sys.path:
+    sys.path.insert(0, str(_SHARED))
 
-def detect_market(ticker: str) -> str:
-    """Detect market from ticker suffix."""
-    t = ticker.upper().strip()
-    if t.endswith(".HK"): return "HK"
-    if t.endswith(".SS") or t.endswith(".SZ"): return "CN"
-    if t.endswith(".T"): return "JP"
-    if t.endswith(".L"): return "UK"
-    if t.endswith(".DE"): return "DE"
-    if t.endswith(".PA"): return "FR"
-    if t.endswith(".AS"): return "NL"
-    return "US"
+from _data.provider import BENCHMARKS, detect_market, download_closes, get_info, get_market_config  # noqa: E402
+
+try:
+    import pandas as pd
+    import numpy as np
+except ImportError as e:
+    print(f"ERROR: Missing dependency — {e}. Run: pip install akshare pandas numpy", file=sys.stderr)
+    sys.exit(1)
 
 
 def detect_portfolio_market(tickers: list[str]) -> str:
-    """Detect primary market from a list of tickers (majority rule)."""
     if not tickers:
         return "US"
     return Counter([detect_market(t) for t in tickers]).most_common(1)[0][0]
 
 
-_RISK_FREE_RATES = {
-    "US": 0.045, "HK": 0.04, "CN": 0.02, "JP": 0.01,
-    "UK": 0.04, "DE": 0.03, "FR": 0.03, "NL": 0.03,
-}
-
-
 def get_risk_free_rate(market: str) -> float:
-    return _RISK_FREE_RATES.get(market, 0.04)
-
-try:
-    import yfinance as yf
-    import pandas as pd
-    import numpy as np
-except ImportError as e:
-    print(f"ERROR: Missing dependency — {e}. Run: pip install yfinance pandas numpy", file=sys.stderr)
-    sys.exit(1)
-
-
-# Benchmark index per market
-BENCHMARKS = {
-    "US": "SPY",
-    "HK": "2800.HK",
-    "CN": "510300.SS",
-    "JP": "1306.T",
-    "UK": "ISF.L",
-}
+    return get_market_config(market)["risk_free_rate"]
 
 
 def parse_portfolio(input_str):
@@ -83,17 +59,9 @@ def normalize_weights(weights):
 
 def fetch_price_history(tickers, days=365):
     """Fetch daily adjusted close prices for all tickers."""
-    end = datetime.today()
-    start = end - timedelta(days=days + 30)
     try:
-        data = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)
-        if data.empty:
-            return pd.DataFrame()
-        if isinstance(data.columns, pd.MultiIndex):
-            prices = data["Close"]
-        else:
-            prices = data[["Close"]].rename(columns={"Close": tickers[0]}) if len(tickers) == 1 else data
-        return prices.dropna(how="all")
+        prices = download_closes(tickers, days=days)
+        return prices.dropna(how="all") if not prices.empty else pd.DataFrame()
     except Exception as e:
         print(f"WARN: Failed to fetch price history: {e}", file=sys.stderr)
         return pd.DataFrame()
@@ -150,15 +118,10 @@ def main():
 
     for sym in tickers:
         print(f"  Fetching {sym}...", file=sys.stderr)
-        t = yf.Ticker(sym)
-        info = t.info
-        price = None
-        try:
-            price = info.get("currentPrice") or info.get("regularMarketPrice")
-            if price:
-                price = round(float(price), 2)
-        except Exception:
-            pass
+        info = get_info(sym)
+        price = info.get("currentPrice") or info.get("regularMarketPrice")
+        if price:
+            price = round(float(price), 2)
 
         sector = info.get("sector", "Unknown")
         w = weights[sym]
@@ -288,9 +251,17 @@ def main():
     # Sector HHI
     sector_hhi = round(sum(v ** 2 for v in sector_weights.values()), 1)
 
+    price_data_end = None
+    if not prices.empty:
+        try:
+            price_data_end = prices.index[-1].strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
     # ── Build result ─────────────────────────────────────────────────────
     result = {
         "date": datetime.now().strftime("%Y-%m-%d"),
+        "price_data_end": price_data_end,
         "market": market,
         "holdings": holdings,
         "sector_exposure": dict(sorted(sector_weights.items(), key=lambda x: x[1], reverse=True)),
@@ -347,6 +318,8 @@ def format_report(r, weights, tickers):
     lines = []
     lines.append("# Portfolio Diagnostics")
     lines.append(f"\n_{r['date']} | {len(tickers)} holdings | {r['market']} Market_\n")
+    if r.get("price_data_end"):
+        lines.append(f"_收益/波动基于日 K，截至 **{r['price_data_end']}**_\n")
 
     # ── Holdings Table ───────────────────────────────────────────────────
     lines.append("## Holdings\n")
@@ -356,7 +329,7 @@ def format_report(r, weights, tickers):
         h = r["holdings"][sym]
         lines.append(
             f"| **{sym}** | {h['name']} | {h['weight_pct']}% | {h['sector']} | "
-            f"{_fmt(h.get('price'), prefix='$')} | "
+            f"{_fmt(h.get('price'), prefix='')} | "
             f"{_fmt(h.get('return_1m_pct'), suffix='%')} | "
             f"{_fmt(h.get('return_3m_pct'), suffix='%')} | "
             f"{_fmt(h.get('return_1y_pct'), suffix='%')} |"
